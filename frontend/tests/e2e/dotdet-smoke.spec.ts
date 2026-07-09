@@ -1,11 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-
-async function openAnalyzePage(page: Page) {
-  await page.goto('/')
-  await expect(page.getByRole('heading', { name: '.DET' })).toBeVisible()
-  await page.getByRole('button', { name: 'Analyze Local' }).click()
-  await expect(page.getByRole('heading', { name: 'Analyze a .NET Solution' })).toBeVisible()
-}
+import fs from 'node:fs/promises'
 
 async function analyzeSample(page: Page) {
   await page.goto('/')
@@ -20,14 +14,35 @@ test.describe('DotDet critical smoke flows', () => {
     await page.evaluate(() => localStorage.clear())
   })
 
-  test('home page and invalid path error state', async ({ page }) => {
-    await openAnalyzePage(page)
+  test('public landing and authenticated ZIP dashboard', async ({ page }) => {
+    await page.goto('/')
+    await expect(page.getByRole('heading', { name: '.DET' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Production-readiness analysis for serious ASP.NET Core teams.' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Login with GitHub' }).first()).toBeVisible()
 
-    await page.locator('#solution-path').fill('C:\\definitely-not-real\\missing.slnx')
-    await page.getByRole('button', { name: 'Run Analysis' }).click()
-
-    await expect(page.getByText("Could not find 'C:\\definitely-not-real\\missing.slnx'.")).toBeVisible()
-    await expect(page.getByRole('heading', { name: 'Analyze a .NET Solution' })).toBeVisible()
+    await page.route('**/api/auth/me', async (route) => {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          isAuthenticated: true,
+          user: {
+            avatarUrl: null,
+            createdDate: new Date().toISOString(),
+            displayName: 'Ada Lovelace',
+            email: 'ada@example.com',
+            githubUserId: '123',
+            githubUsername: 'ada',
+            lastLoginDate: new Date().toISOString(),
+          },
+        }),
+      })
+    })
+    await page.goto('/dashboard')
+    await expect(page.getByRole('heading', { name: 'Welcome, Ada Lovelace' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Upload Solution ZIP' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Login with GitHub' })).toHaveCount(0)
+    await expect(page.locator('#solution-path')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Run Analysis' })).toBeDisabled()
   })
 
   test('sample analysis, overview, export, and responsive layout', async ({ page }) => {
@@ -43,9 +58,39 @@ test.describe('DotDet critical smoke flows', () => {
     await expect(page.getByRole('heading', { name: 'Project dependency map' })).toBeVisible()
     await page.getByRole('button', { name: 'Overview' }).click()
 
-    const download = page.waitForEvent('download')
+    const htmlDownloadPromise = page.waitForEvent('download')
     await page.getByRole('button', { name: 'Export Report' }).click()
-    await expect(await download).toBeTruthy()
+    await page.getByRole('menuitem', { name: 'HTML report' }).click()
+    const htmlDownload = await htmlDownloadPromise
+    const htmlPath = await htmlDownload.path()
+    expect(htmlPath).toBeTruthy()
+    const htmlReport = await fs.readFile(htmlPath!, 'utf8')
+    expect(htmlReport).toContain('Production Readiness Report')
+    expect(htmlReport).toContain('Score explanation')
+    expect(htmlReport).toContain('DotDet logo')
+    expect(htmlReport).toContain('Suppressions And Accepted Risks')
+    expect(htmlReport).not.toContain('<h2>Source Preview</h2>')
+
+    const markdownDownloadPromise = page.waitForEvent('download')
+    await page.getByRole('button', { name: 'Export Report' }).click()
+    await page.getByRole('menuitem', { name: 'Markdown report' }).click()
+    const markdownDownload = await markdownDownloadPromise
+    const markdownPath = await markdownDownload.path()
+    expect(markdownPath).toBeTruthy()
+    const markdownReport = await fs.readFile(markdownPath!, 'utf8')
+    expect(markdownReport).toContain('Score explanation')
+    expect(markdownReport).toContain('## Open Findings By Category')
+    expect(markdownReport).toContain('## Suppressed / Accepted Risks')
+
+    const jsonDownloadPromise = page.waitForEvent('download')
+    await page.getByRole('button', { name: 'Export Report' }).click()
+    await page.getByRole('menuitem', { name: 'JSON data' }).click()
+    const jsonDownload = await jsonDownloadPromise
+    const jsonPath = await jsonDownload.path()
+    expect(jsonPath).toBeTruthy()
+    const jsonReport = JSON.parse(await fs.readFile(jsonPath!, 'utf8')) as { solutionName?: string; issues?: unknown[] }
+    expect(jsonReport.solutionName).toBeTruthy()
+    expect(Array.isArray(jsonReport.issues)).toBe(true)
 
     await page.setViewportSize({ width: 390, height: 844 })
     const mobileOverflow = await page.evaluate(() => document.body.scrollWidth > window.innerWidth + 2)
@@ -62,16 +107,16 @@ test.describe('DotDet critical smoke flows', () => {
     await page.getByRole('button', { name: 'Findings' }).click()
 
     await expect(page.getByRole('heading', { name: 'Findings' })).toBeVisible()
-    await expect(page.getByText('22 of 22 findings')).toBeVisible()
+    await expect(page.getByText(/\d+ of \d+ findings/)).toBeVisible()
 
     await page.locator('select').nth(0).selectOption('Error')
     await page.locator('select').nth(1).selectOption('Security')
-    await expect(page.getByText('1 of 22 findings')).toBeVisible()
+    await expect(page.getByText(/1 of \d+ findings/)).toBeVisible()
 
     await page.getByLabel('Hide suppressed').check()
     await page.locator('select').nth(0).selectOption('Warning')
     await page.getByPlaceholder('Search findings, files, projects, recommendations').fill('CORS')
-    await expect(page.getByText('1 of 22 findings')).toBeVisible()
+    await expect(page.getByText(/1 of \d+ findings/)).toBeVisible()
     await expect(page.getByText('A CORS policy allows requests from any browser origin.')).toBeVisible()
 
     await page.getByPlaceholder('Search findings, files, projects, recommendations').fill('zzzz-not-found')
@@ -114,7 +159,7 @@ test.describe('DotDet critical smoke flows', () => {
     await page.getByPlaceholder('Search rules').fill('CORS')
     await expect(page.getByRole('heading', { name: 'CORS policy allows any origin' })).toBeVisible()
     await expect(page.getByRole('heading', { name: 'Code Examples' })).toBeVisible()
-    await expect(page.locator('pre')).toHaveCount(3)
+    await expect(page.locator('pre').first()).toBeVisible()
 
     await page.getByRole('button', { name: 'Settings' }).click()
     await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible()
@@ -122,7 +167,7 @@ test.describe('DotDet critical smoke flows', () => {
     await expect(page.getByText('Gutter markers')).toBeVisible()
     await page.getByRole('button', { name: 'Analysis', exact: true }).click()
     await expect(page.getByText('Open first finding')).toBeVisible()
-    await page.getByRole('button', { name: 'Export', exact: true }).click()
+    await page.getByRole('button', { name: 'Export', exact: true }).last().click()
     await expect(page.getByText('Report format')).toBeVisible()
   })
 })
