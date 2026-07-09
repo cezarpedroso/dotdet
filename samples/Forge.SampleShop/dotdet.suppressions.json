@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "repositoryId": "sample-forge-sampleshop",
+  "suppressions": [
+    {
+      "id": "sup_cb024a18685b489abf8ec45c3110ca3c",
+      "ruleId": "API005",
+      "file": "src/Forge.SampleShop.Api/Program.cs",
+      "project": "Forge.SampleShop.Api",
+      "reason": "Accepted Risk set from the DotDet workbench.",
+      "status": "Accepted Risk",
+      "createdDate": "2026-07-08T23:56:21.378343+00:00",
+      "expiration": null
+    },
+    {
+      "id": "sup_d0673fc2bc13437d8dcca831461867a0",
+      "ruleId": "ARCH002",
+      "file": "src/Forge.SampleShop.Domain/Order.cs",
+      "project": "Forge.SampleShop.Domain",
+      "reason": "Ignore set from the DotDet workbench.",
+      "status": "Ignore",
+      "createdDate": "2026-07-08T23:56:19.4284233+00:00",
+      "expiration": null
+    },
+    {
+      "id": "sup_sample_https_redirection",
+      "ruleId": "SEC003",
+      "file": "src/Forge.SampleShop.Api/Program.cs",
+      "project": "Forge.SampleShop.Api",
+      "reason": "Sample suppression demonstrating repository-level accepted risk workflow.",
+      "status": "Accepted Risk",
+      "createdDate": "2026-07-08T00:00:00+00:00",
+      "expiration": "2027-01-01T00:00:00+00:00"
+    },
+    {
+      "id": "sup_ec1d92b8f48848a8a5df6dcc4f4ac351",
+      "ruleId": "SECCONN",
+      "file": "src/Forge.SampleShop.Api/appsettings.json",
+      "project": "Forge.SampleShop.Api",
+      "reason": "Ignore set from the DotDet workbench.",
+      "status": "Ignore",
+      "createdDate": "2026-07-08T06:11:05.0770516+00:00",
+      "expiration": null
+    }
+  ]
+}

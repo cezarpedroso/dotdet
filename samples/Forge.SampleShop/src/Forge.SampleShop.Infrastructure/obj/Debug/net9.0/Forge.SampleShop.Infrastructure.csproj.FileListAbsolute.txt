@@ -1,0 +1,15 @@
+C:\Users\cezar\Documents\Codex\2026-07-06\build-the-mvp-for-a-project\samples\Forge.SampleShop\src\Forge.SampleShop.Infrastructure\obj\Debug\net9.0\Forge.SampleShop.Infrastructure.csproj.AssemblyReference.cache
+C:\Users\cezar\Documents\Codex\2026-07-06\build-the-mvp-for-a-project\samples\Forge.SampleShop\src\Forge.SampleShop.Infrastructure\obj\Debug\net9.0\Forge.SampleShop.Infrastructure.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\cezar\Documents\Codex\2026-07-06\build-the-mvp-for-a-project\samples\Forge.SampleShop\src\Forge.SampleShop.Infrastructure\obj\Debug\net9.0\Forge.SampleShop.Infrastructure.AssemblyInfoInputs.cache
+C:\Users\cezar\Documents\Codex\2026-07-06\build-the-mvp-for-a-project\samples\Forge.SampleShop\src\Forge.SampleShop.Infrastructure\obj\Debug\net9.0\Forge.SampleShop.Infrastructure.AssemblyInfo.cs
+C:\Users\cezar\Documents\Codex\2026-07-06\build-the-mvp-for-a-project\samples\Forge.SampleShop\src\Forge.SampleShop.Infrastructure\obj\Debug\net9.0\Forge.SampleShop.Infrastructure.csproj.CoreCompileInputs.cache
+C:\Users\cezar\Documents\Codex\2026-07-06\build-the-mvp-for-a-project\samples\Forge.SampleShop\src\Forge.SampleShop.Infrastructure\bin\Debug\net9.0\Forge.SampleShop.Infrastructure.deps.json
+C:\Users\cezar\Documents\Codex\2026-07-06\build-the-mvp-for-a-project\samples\Forge.SampleShop\src\Forge.SampleShop.Infrastructure\bin\Debug\net9.0\Forge.SampleShop.Infrastructure.dll
+C:\Users\cezar\Documents\Codex\2026-07-06\build-the-mvp-for-a-project\samples\Forge.SampleShop\src\Forge.SampleShop.Infrastructure\bin\Debug\net9.0\Forge.SampleShop.Infrastructure.pdb
+C:\Users\cezar\Documents\Codex\2026-07-06\build-the-mvp-for-a-project\samples\Forge.SampleShop\src\Forge.SampleShop.Infrastructure\bin\Debug\net9.0\Forge.SampleShop.Domain.dll
+C:\Users\cezar\Documents\Codex\2026-07-06\build-the-mvp-for-a-project\samples\Forge.SampleShop\src\Forge.SampleShop.Infrastructure\bin\Debug\net9.0\Forge.SampleShop.Domain.pdb
+C:\Users\cezar\Documents\Codex\2026-07-06\build-the-mvp-for-a-project\samples\Forge.SampleShop\src\Forge.SampleShop.Infrastructure\obj\Debug\net9.0\Forge.Sa.44AC69C6.Up2Date
+C:\Users\cezar\Documents\Codex\2026-07-06\build-the-mvp-for-a-project\samples\Forge.SampleShop\src\Forge.SampleShop.Infrastructure\obj\Debug\net9.0\Forge.SampleShop.Infrastructure.dll
+C:\Users\cezar\Documents\Codex\2026-07-06\build-the-mvp-for-a-project\samples\Forge.SampleShop\src\Forge.SampleShop.Infrastructure\obj\Debug\net9.0\refint\Forge.SampleShop.Infrastructure.dll
+C:\Users\cezar\Documents\Codex\2026-07-06\build-the-mvp-for-a-project\samples\Forge.SampleShop\src\Forge.SampleShop.Infrastructure\obj\Debug\net9.0\Forge.SampleShop.Infrastructure.pdb
+C:\Users\cezar\Documents\Codex\2026-07-06\build-the-mvp-for-a-project\samples\Forge.SampleShop\src\Forge.SampleShop.Infrastructure\obj\Debug\net9.0\ref\Forge.SampleShop.Infrastructure.dll

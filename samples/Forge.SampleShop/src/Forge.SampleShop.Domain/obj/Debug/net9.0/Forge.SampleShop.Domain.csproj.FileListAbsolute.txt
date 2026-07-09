@@ -1,0 +1,12 @@
+C:\Users\cezar\Documents\Codex\2026-07-06\build-the-mvp-for-a-project\samples\Forge.SampleShop\src\Forge.SampleShop.Domain\bin\Debug\net9.0\Forge.SampleShop.Domain.deps.json
+C:\Users\cezar\Documents\Codex\2026-07-06\build-the-mvp-for-a-project\samples\Forge.SampleShop\src\Forge.SampleShop.Domain\bin\Debug\net9.0\Forge.SampleShop.Domain.dll
+C:\Users\cezar\Documents\Codex\2026-07-06\build-the-mvp-for-a-project\samples\Forge.SampleShop\src\Forge.SampleShop.Domain\bin\Debug\net9.0\Forge.SampleShop.Domain.pdb
+C:\Users\cezar\Documents\Codex\2026-07-06\build-the-mvp-for-a-project\samples\Forge.SampleShop\src\Forge.SampleShop.Domain\obj\Debug\net9.0\Forge.SampleShop.Domain.csproj.AssemblyReference.cache
+C:\Users\cezar\Documents\Codex\2026-07-06\build-the-mvp-for-a-project\samples\Forge.SampleShop\src\Forge.SampleShop.Domain\obj\Debug\net9.0\Forge.SampleShop.Domain.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\cezar\Documents\Codex\2026-07-06\build-the-mvp-for-a-project\samples\Forge.SampleShop\src\Forge.SampleShop.Domain\obj\Debug\net9.0\Forge.SampleShop.Domain.AssemblyInfoInputs.cache
+C:\Users\cezar\Documents\Codex\2026-07-06\build-the-mvp-for-a-project\samples\Forge.SampleShop\src\Forge.SampleShop.Domain\obj\Debug\net9.0\Forge.SampleShop.Domain.AssemblyInfo.cs
+C:\Users\cezar\Documents\Codex\2026-07-06\build-the-mvp-for-a-project\samples\Forge.SampleShop\src\Forge.SampleShop.Domain\obj\Debug\net9.0\Forge.SampleShop.Domain.csproj.CoreCompileInputs.cache
+C:\Users\cezar\Documents\Codex\2026-07-06\build-the-mvp-for-a-project\samples\Forge.SampleShop\src\Forge.SampleShop.Domain\obj\Debug\net9.0\Forge.SampleShop.Domain.dll
+C:\Users\cezar\Documents\Codex\2026-07-06\build-the-mvp-for-a-project\samples\Forge.SampleShop\src\Forge.SampleShop.Domain\obj\Debug\net9.0\refint\Forge.SampleShop.Domain.dll
+C:\Users\cezar\Documents\Codex\2026-07-06\build-the-mvp-for-a-project\samples\Forge.SampleShop\src\Forge.SampleShop.Domain\obj\Debug\net9.0\Forge.SampleShop.Domain.pdb
+C:\Users\cezar\Documents\Codex\2026-07-06\build-the-mvp-for-a-project\samples\Forge.SampleShop\src\Forge.SampleShop.Domain\obj\Debug\net9.0\ref\Forge.SampleShop.Domain.dll

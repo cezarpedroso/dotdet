@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "dgSpecHash": "OHYwL3Ime9k=",
+  "success": true,
+  "projectFilePath": "C:\\Users\\cezar\\Documents\\Codex\\2026-07-06\\build-the-mvp-for-a-project\\work\\semantic-fixture\\SemanticFixture.Api\\SemanticFixture.Api.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\cezar\\.nuget\\packages\\microsoft.aspnetcore.openapi\\9.0.17\\microsoft.aspnetcore.openapi.9.0.17.nupkg.sha512",
+    "C:\\Users\\cezar\\.nuget\\packages\\microsoft.openapi\\1.6.17\\microsoft.openapi.1.6.17.nupkg.sha512"
+  ],
+  "logs": []
+}
