@@ -17,6 +17,8 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using System.Net;
 using System.Security.Claims;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 using Xunit;
 
 namespace Forge.Api.Tests;
@@ -181,6 +183,45 @@ public sealed class SemanticAnalysisTests
         Assert.Null(gate.TryAcquire("user:one"));
         using var otherUser = gate.TryAcquire("user:two");
         Assert.NotNull(otherUser);
+    }
+
+    [Fact]
+    public void AnalysisFidelity_ReportsActualSemanticCoverage()
+    {
+        var options = AnalysisLoadOptions.For(AnalysisInputTrust.TrustedLocalDevelopment);
+
+        var full = SolutionAnalysisService.DetermineAnalysisFidelity(options, 3, 3, 12);
+        var degraded = SolutionAnalysisService.DetermineAnalysisFidelity(options, 3, 1, 4);
+        var fallback = SolutionAnalysisService.DetermineAnalysisFidelity(options, 3, 0, 0);
+
+        Assert.Equal("Roslyn Semantic Analysis", full.AnalysisFidelity);
+        Assert.False(full.SemanticAnalysisSkipped);
+        Assert.True(full.HasSemanticData);
+
+        Assert.Equal("Project Load Degraded", degraded.AnalysisFidelity);
+        Assert.True(degraded.SemanticAnalysisSkipped);
+        Assert.True(degraded.HasSemanticData);
+        Assert.Contains("1 of 3", degraded.SemanticAnalysisSkippedReason);
+
+        Assert.Equal("Syntax Fallback", fallback.AnalysisFidelity);
+        Assert.True(fallback.SemanticAnalysisSkipped);
+        Assert.False(fallback.HasSemanticData);
+        Assert.Contains("did not produce semantic projects and documents", fallback.SemanticAnalysisSkippedReason);
+    }
+
+    [Fact]
+    public void AnalysisFidelity_UntrustedInputAlwaysReportsSafeSyntaxAnalysis()
+    {
+        var fidelity = SolutionAnalysisService.DetermineAnalysisFidelity(
+            AnalysisLoadOptions.For(AnalysisInputTrust.UntrustedArchive),
+            projectCount: 3,
+            semanticProjectCount: 3,
+            semanticDocumentCount: 12);
+
+        Assert.Equal("Safe Syntax Analysis", fidelity.AnalysisFidelity);
+        Assert.True(fidelity.SemanticAnalysisSkipped);
+        Assert.False(fidelity.HasSemanticData);
+        Assert.Contains("untrusted input", fidelity.SemanticAnalysisSkippedReason);
     }
 
     [Fact]
@@ -551,9 +592,11 @@ public sealed class SemanticAnalysisTests
 
             var issue = Assert.Single(detail.Result.Issues);
             Assert.Equal("src/Api/Program.cs", issue.FilePath);
+            Assert.Equal("SEC001|Api|src/Api/Program.cs|Configuration risk", issue.RootCauseKey);
             Assert.Equal("src/Api/Program.cs", Assert.Single(issue.Evidence!).FilePath);
             Assert.Equal("src/Api/Api.csproj", Assert.Single(detail.Result.ProjectGraph.Projects).FilePath);
             Assert.Equal("src/Api/Api.csproj", Assert.Single(detail.Result.ArchitectureMap!.Projects).FilePath);
+            AssertNoServerPathLeak(detail, repositoryRoot);
         }
         finally
         {
@@ -610,6 +653,59 @@ public sealed class SemanticAnalysisTests
             Assert.False(Path.IsPathRooted(issue.FilePath!)));
         Assert.All(result.ProjectGraph.Projects, project => Assert.False(Path.IsPathRooted(project.FilePath)));
         Assert.All(result.ArchitectureMap?.Projects ?? [], project => Assert.False(Path.IsPathRooted(project.FilePath)));
+        Assert.All(result.Issues, issue => AssertRootCauseKeyIsSafe(issue.RootCauseKey));
+        AssertNoServerPathLeak(result, Path.GetDirectoryName(SolutionAnalysisService.ResolveSampleSolutionPath())!);
+    }
+
+    [Fact]
+    public async Task AnalysisHistoryStore_ResanitizesLegacyRootCauseKeysOnRead()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"dotdet-legacy-history-{Guid.NewGuid():N}");
+        var storePath = Path.Combine(tempRoot, "history.json");
+        var repositoryRoot = Path.Combine(tempRoot, "private-repo");
+        var result = CreateHistoryAnalysisResult(repositoryRoot);
+        var run = new AnalysisHistoryRun
+        {
+            Id = "legacy-run",
+            UserId = "user-a",
+            SolutionName = result.SolutionName,
+            SourceType = AnalysisSourceTypes.GitHubRepo,
+            SourceLabel = "owner/private-repo",
+            Score = result.OverallScore,
+            Grade = "B",
+            Status = "Needs Review",
+            OpenFindingCount = 1,
+            TotalFindingCount = 1,
+            CreatedAt = DateTimeOffset.UtcNow,
+            CompletedAt = DateTimeOffset.UtcNow,
+            ReportSnapshot = result with
+            {
+                RepositoryRoot = null,
+                Issues = result.Issues.Select(issue => issue with
+                {
+                    RootCauseKey = $"SEC001|Api|{Path.Combine(repositoryRoot, "src", "Api", "Program.cs")}|Configuration risk"
+                }).ToArray()
+            }
+        };
+
+        try
+        {
+            Directory.CreateDirectory(tempRoot);
+            await File.WriteAllTextAsync(storePath, JsonSerializer.Serialize(new[] { run }));
+
+            var detail = await new AnalysisHistoryStore(storePath).GetAsync("user-a", run.Id);
+
+            Assert.NotNull(detail);
+            Assert.Contains("<unknown-file>", Assert.Single(detail.Result.Issues).RootCauseKey);
+            AssertNoServerPathLeak(detail, repositoryRoot, tempRoot);
+        }
+        finally
+        {
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, recursive: true);
+            }
+        }
     }
 
     [Fact]
@@ -1083,6 +1179,7 @@ public sealed class SemanticAnalysisTests
 
         var issue = Assert.Single(liveResult.Issues);
         Assert.Equal("src/Api/Program.cs", issue.FilePath);
+        Assert.Equal("SEC001|Api|src/Api/Program.cs|Configuration risk", issue.RootCauseKey);
         Assert.Equal("src/Api/Program.cs", Assert.Single(issue.Evidence!).FilePath);
         Assert.DoesNotContain(repositoryRoot, issue.WhyDetected!, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(repositoryRoot, Assert.Single(issue.Evidence!).Detail, StringComparison.OrdinalIgnoreCase);
@@ -1092,6 +1189,7 @@ public sealed class SemanticAnalysisTests
         var serialized = System.Text.Json.JsonSerializer.Serialize(liveResult);
         Assert.DoesNotContain(repositoryRoot.Replace('\\', '/'), serialized, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(repositoryRoot, serialized, StringComparison.OrdinalIgnoreCase);
+        AssertNoServerPathLeak(liveResult, repositoryRoot);
     }
 
     [Fact]
@@ -2788,6 +2886,7 @@ public sealed class SemanticAnalysisTests
                     FilePath = sourcePath,
                     LineNumber = 12,
                     Recommendation = "Move sensitive values into a managed secret store.",
+                    RootCauseKey = $"SEC001|Api|{sourcePath}|Configuration risk",
                     Evidence =
                     [
                         new AnalysisEvidence
@@ -2855,6 +2954,61 @@ public sealed class SemanticAnalysisTests
             RepositoryRoot = repositoryRoot,
             SuppressionFilePath = Path.Combine(repositoryRoot, "dotdet.suppressions.json")
         };
+    }
+
+    private static void AssertRootCauseKeyIsSafe(string? rootCauseKey)
+    {
+        if (string.IsNullOrWhiteSpace(rootCauseKey))
+        {
+            return;
+        }
+
+        Assert.All(rootCauseKey.Split('|'), segment =>
+        {
+            Assert.False(Path.IsPathRooted(segment), $"Root-cause key contains an absolute path: {rootCauseKey}");
+            Assert.DoesNotContain("..", segment, StringComparison.Ordinal);
+        });
+    }
+
+    private static void AssertNoServerPathLeak(object value, params string[] serverRoots)
+    {
+        var element = JsonSerializer.SerializeToElement(value);
+        AssertNoServerPathLeak(element, "$", serverRoots
+            .Where(root => !string.IsNullOrWhiteSpace(root))
+            .SelectMany(root => new[] { root, root.Replace('\\', '/') })
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray());
+    }
+
+    private static void AssertNoServerPathLeak(JsonElement element, string propertyPath, IReadOnlyList<string> serverRoots)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                foreach (var property in element.EnumerateObject())
+                {
+                    AssertNoServerPathLeak(property.Value, $"{propertyPath}.{property.Name}", serverRoots);
+                }
+                break;
+            case JsonValueKind.Array:
+                var index = 0;
+                foreach (var item in element.EnumerateArray())
+                {
+                    AssertNoServerPathLeak(item, $"{propertyPath}[{index++}]", serverRoots);
+                }
+                break;
+            case JsonValueKind.String:
+                var text = element.GetString() ?? string.Empty;
+                Assert.DoesNotContain(serverRoots, root =>
+                    text.Contains(root, StringComparison.OrdinalIgnoreCase));
+                Assert.False(
+                    Regex.IsMatch(text, @"\b[A-Za-z]:[\\/]"),
+                    $"Serialized response contains a Windows absolute path at {propertyPath}: {text}");
+                Assert.False(
+                    Regex.IsMatch(text, @"(?<![:\w])/(?:tmp|home|Users|private/var|var/tmp|mnt)/", RegexOptions.IgnoreCase),
+                    $"Serialized response contains a Unix server or temporary path at {propertyPath}: {text}");
+                break;
+        }
     }
 
     private static string GetSampleSolutionPath()

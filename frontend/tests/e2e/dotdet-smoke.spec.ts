@@ -45,6 +45,28 @@ test.describe('DotDet critical smoke flows', () => {
     await expect(page.locator('#solution-path')).toHaveCount(0)
   })
 
+  test('public Docs and Changelog provide connected release documentation', async ({ page }) => {
+    await page.goto('/docs')
+    await expect(page.getByRole('heading', { name: 'DotDet Documentation' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Security and privacy' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Engine maturity' })).toBeVisible()
+    await expect(page.getByRole('link', { name: 'Project README' })).toHaveAttribute('href', /github\.com\/cezarpedroso\/dotdet\/blob\/main\/README\.md/)
+
+    await page.locator('.det-docs-header-actions').getByRole('link', { name: 'View v0.1 changes' }).click()
+    await expect(page).toHaveURL(/\/changelog$/)
+    await expect(page.getByRole('heading', { name: 'Release notes' })).toBeVisible()
+    await expect(page.getByText('v0.1 Preview', { exact: true })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Security and privacy hardening' })).toBeVisible()
+
+    await page.locator('.det-changelog-footer').getByRole('link', { name: 'Open Docs' }).click()
+    await expect(page).toHaveURL(/\/docs$/)
+    await expect(page.getByRole('heading', { name: 'DotDet Documentation' })).toBeVisible()
+
+    await page.setViewportSize({ width: 390, height: 844 })
+    expect(await page.evaluate(() => document.body.scrollWidth > window.innerWidth + 2)).toBe(false)
+    await expect(page.getByRole('button', { name: 'Login with GitHub' })).toBeVisible()
+  })
+
   test('sample analysis, overview, export, and responsive layout', async ({ page }) => {
     await analyzeSample(page)
 
@@ -85,6 +107,7 @@ test.describe('DotDet critical smoke flows', () => {
 
     await expect.poll(() => page.evaluate(() => localStorage.getItem('det.analysis.lastResult.v1'))).not.toBeNull()
     const persistedAnalysis = await page.evaluate(() => JSON.parse(localStorage.getItem('det.analysis.lastResult.v1') ?? '{}')) as {
+      issues?: Array<{ rootCauseKey?: string }>
       solutionPath?: string
       repositoryRoot?: string
       sourceFiles?: unknown[]
@@ -92,15 +115,26 @@ test.describe('DotDet critical smoke flows', () => {
     expect(persistedAnalysis.solutionPath).toBeUndefined()
     expect(persistedAnalysis.repositoryRoot).toBeUndefined()
     expect(persistedAnalysis.sourceFiles).toBeUndefined()
+    expect(persistedAnalysis.issues?.every((issue) => !/^[^|]*\|[^|]*\|[A-Za-z]:[\\/]/.test(issue.rootCauseKey ?? ''))).toBe(true)
 
     await page.evaluate(() => {
       localStorage.setItem('det.analysis.lastSolutionPath', 'C:\\server\\private\\Sample.slnx')
+      const stored = JSON.parse(localStorage.getItem('det.analysis.lastResult.v1') ?? '{}')
+      if (stored.issues?.[0]) {
+        stored.issues[0].rootCauseKey = 'SEC001|Api|C:\\server\\private\\Program.cs|Configuration risk'
+      }
+      localStorage.setItem('det.analysis.lastResult.v1', JSON.stringify(stored))
       localStorage.setItem('det.findingDispositions.v1', JSON.stringify({
         'unrelated-private-file:C:\\secret\\Private.cs': 'Accepted Risk',
       }))
     })
     await page.reload()
     expect(await page.evaluate(() => localStorage.getItem('det.analysis.lastSolutionPath'))).toBeNull()
+    const resanitizedAnalysis = await page.evaluate(() => JSON.parse(localStorage.getItem('det.analysis.lastResult.v1') ?? '{}')) as {
+      issues?: Array<{ rootCauseKey?: string }>
+    }
+    expect(resanitizedAnalysis.issues?.[0]?.rootCauseKey).toContain('<unknown-file>')
+    expect(JSON.stringify(resanitizedAnalysis)).not.toContain('C:\\server\\private')
 
     const jsonDownloadPromise = page.waitForEvent('download')
     await page.getByRole('button', { name: 'Export Report' }).click()
@@ -110,7 +144,7 @@ test.describe('DotDet critical smoke flows', () => {
     expect(jsonPath).toBeTruthy()
     const jsonReport = JSON.parse(await fs.readFile(jsonPath!, 'utf8')) as {
       findingDispositions?: Record<string, string>
-      issues?: unknown[]
+      issues?: Array<{ rootCauseKey?: string }>
       solutionName?: string
       solutionPath?: string
       sourceFiles?: unknown[]
@@ -120,6 +154,8 @@ test.describe('DotDet critical smoke flows', () => {
     expect(jsonReport.solutionPath).toBeUndefined()
     expect(jsonReport.sourceFiles).toBeUndefined()
     expect(jsonReport.findingDispositions).not.toHaveProperty('unrelated-private-file:C:\\secret\\Private.cs')
+    expect(jsonReport.issues?.[0]?.rootCauseKey).toContain('<unknown-file>')
+    expect(JSON.stringify(jsonReport)).not.toContain('C:\\server\\private')
 
     await page.setViewportSize({ width: 390, height: 844 })
     const mobileOverflow = await page.evaluate(() => document.body.scrollWidth > window.innerWidth + 2)

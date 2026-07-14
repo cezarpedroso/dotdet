@@ -94,6 +94,7 @@ public static class AnalysisResultSanitizer
             WhyItMatters = SanitizeText(issue.WhyItMatters, root),
             RecommendedPattern = SanitizeText(issue.RecommendedPattern, root),
             SuggestedImplementation = SanitizeText(issue.SuggestedImplementation, root),
+            RootCauseKey = SanitizeRootCauseKey(issue.RootCauseKey, root),
             Evidence = issue.Evidence?.Select(evidence => evidence with
             {
                 Label = SanitizeRequiredText(evidence.Label, root),
@@ -220,6 +221,51 @@ public static class AnalysisResultSanitizer
     private static string SanitizeRequiredText(string value, string? root)
     {
         return SanitizeText(value, root) ?? string.Empty;
+    }
+
+    private static string? SanitizeRootCauseKey(string? rootCauseKey, string? root)
+    {
+        if (string.IsNullOrWhiteSpace(rootCauseKey))
+        {
+            return rootCauseKey;
+        }
+
+        return string.Join('|', rootCauseKey
+            .Split('|')
+            .Select(segment => LooksLikePath(segment)
+                ? ToSafeRootCausePath(segment, root)
+                : SanitizeRequiredText(segment, root)));
+    }
+
+    private static string ToSafeRootCausePath(string value, string? root)
+    {
+        var path = value.Trim();
+        if (!Path.IsPathRooted(path))
+        {
+            var normalized = NormalizeDisplayPath(path);
+            return normalized.Split('/').Any(segment => segment == "..")
+                ? "<unknown-file>"
+                : normalized.TrimStart('.', '/');
+        }
+
+        if (string.IsNullOrWhiteSpace(root))
+        {
+            return "<unknown-file>";
+        }
+
+        var relativePath = Path.GetRelativePath(root, path);
+        return Path.IsPathRooted(relativePath)
+            || relativePath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Any(segment => segment == "..")
+                ? "<unknown-file>"
+                : NormalizeDisplayPath(relativePath);
+    }
+
+    private static bool LooksLikePath(string value)
+    {
+        var trimmed = value.Trim();
+        return Path.IsPathRooted(trimmed)
+            || trimmed.Contains('/')
+            || trimmed.Contains('\\');
     }
 
     private static string GetSafePathTail(string path)

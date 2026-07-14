@@ -90,3 +90,8 @@ work/**/obj/
 backend/*.pid
 frontend/*.pid
 backend/Forge.Api/Data/*.json
+
+# Private deployment and operator documentation
+docs/*.private.md
+docs/deployment*.md
+docs/*deployment*.md

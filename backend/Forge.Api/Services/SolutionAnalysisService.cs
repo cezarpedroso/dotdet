@@ -73,6 +73,11 @@ public sealed partial class SolutionAnalysisService
         var solutionPath = ResolveSolutionPath(inputPath);
         var options = AnalysisLoadOptions.For(inputTrust);
         var context = await BuildContextAsync(solutionPath, options, cancellationToken);
+        var fidelity = DetermineAnalysisFidelity(
+            options,
+            context.Projects.Count,
+            context.SemanticProjects.Count,
+            context.SemanticDocuments.Count);
 
         var issues = new List<AnalysisIssue>();
         issues.AddRange(_architectureAnalyzer.Analyze(context));
@@ -80,9 +85,12 @@ public sealed partial class SolutionAnalysisService
         issues.AddRange(_efCoreAnalyzer.Analyze(context));
         issues.AddRange(_securityConfigurationAnalyzer.Analyze(context));
         issues.AddRange(_apiReadinessAnalyzer.Analyze(context));
-        issues = _findingGroupingService.Group(issues).ToList();
+        issues = _findingGroupingService.Group(issues, context.RootDirectory).ToList();
         issues = _issueEnrichmentService.Enrich(issues).ToList();
-        issues = NormalizeDetectionMethodsForFidelity(issues, options).ToList();
+        issues = NormalizeDetectionMethodsForFidelity(
+            issues,
+            context.SemanticProjects,
+            context.SemanticDocuments).ToList();
         var suppressionFile = _suppressionService.Load(solutionPath);
         issues = _suppressionService.Apply(issues, solutionPath, suppressionFile).ToList();
 
@@ -121,13 +129,9 @@ public sealed partial class SolutionAnalysisService
             SourcePreviewIncludedBytes = sourcePreview.IncludedBytes,
             SourcePreviewFileCountLimit = SourcePreviewFileCountLimit,
             SourcePreviewByteLimit = SourcePreviewByteLimit,
-            AnalysisFidelity = options.AllowMSBuildWorkspace
-                ? "Roslyn Semantic Analysis"
-                : "Safe Syntax Analysis",
-            SemanticAnalysisSkipped = !options.AllowMSBuildWorkspace,
-            SemanticAnalysisSkippedReason = options.AllowMSBuildWorkspace
-                ? null
-                : "Semantic project loading was skipped for untrusted input because isolated analysis is not configured. DotDet used safe syntax-based analysis.",
+            AnalysisFidelity = fidelity.AnalysisFidelity,
+            SemanticAnalysisSkipped = fidelity.SemanticAnalysisSkipped,
+            SemanticAnalysisSkippedReason = fidelity.SemanticAnalysisSkippedReason,
             ArchitectureMap = architectureMap,
             EngineeringAssessment = _engineeringAssessmentService.Build(overallScore, categoryScores, orderedIssues, architectureMap),
             SolutionPath = solutionPath,
@@ -835,16 +839,71 @@ public sealed partial class SolutionAnalysisService
 
     private static IEnumerable<AnalysisIssue> NormalizeDetectionMethodsForFidelity(
         IEnumerable<AnalysisIssue> issues,
-        AnalysisLoadOptions options)
+        IReadOnlyList<SemanticProjectContext> semanticProjects,
+        IReadOnlyList<SemanticDocumentContext> semanticDocuments)
     {
-        if (options.AllowMSBuildWorkspace)
-        {
-            return issues;
-        }
+        var semanticProjectNames = semanticProjects
+            .Select(project => project.Project.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var semanticFilePaths = semanticDocuments
+            .Select(document => AnalyzerUtilities.NormalizePath(document.FilePath))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         return issues.Select(issue => issue.DetectionMethod == IssueEnrichmentService.RoslynSemanticAnalysis
+            && !HasSemanticCoverage(issue, semanticProjectNames, semanticFilePaths)
             ? issue with { DetectionMethod = IssueEnrichmentService.RoslynSyntaxAnalysis }
             : issue);
+    }
+
+    private static bool HasSemanticCoverage(
+        AnalysisIssue issue,
+        IReadOnlySet<string> semanticProjectNames,
+        IReadOnlySet<string> semanticFilePaths)
+    {
+        return (!string.IsNullOrWhiteSpace(issue.ProjectName) && semanticProjectNames.Contains(issue.ProjectName))
+            || (!string.IsNullOrWhiteSpace(issue.FilePath)
+                && semanticFilePaths.Contains(AnalyzerUtilities.NormalizePath(issue.FilePath)));
+    }
+
+    public static AnalysisFidelityMetadata DetermineAnalysisFidelity(
+        AnalysisLoadOptions options,
+        int projectCount,
+        int semanticProjectCount,
+        int semanticDocumentCount)
+    {
+        if (!options.AllowMSBuildWorkspace)
+        {
+            return new AnalysisFidelityMetadata(
+                "Safe Syntax Analysis",
+                true,
+                "Semantic project loading was skipped for untrusted input because isolated analysis is not configured. DotDet used safe syntax-based analysis.",
+                false);
+        }
+
+        var hasSemanticData = semanticProjectCount > 0 && semanticDocumentCount > 0;
+        var hasFullSemanticCoverage = hasSemanticData
+            && projectCount > 0
+            && semanticProjectCount >= projectCount;
+
+        if (hasFullSemanticCoverage)
+        {
+            return new AnalysisFidelityMetadata("Roslyn Semantic Analysis", false, null, true);
+        }
+
+        if (hasSemanticData)
+        {
+            return new AnalysisFidelityMetadata(
+                "Project Load Degraded",
+                true,
+                $"Roslyn semantic loading succeeded for {semanticProjectCount} of {projectCount} project(s). DotDet used project-file and syntax fallback analysis for the remaining projects.",
+                true);
+        }
+
+        return new AnalysisFidelityMetadata(
+            "Syntax Fallback",
+            true,
+            "Roslyn semantic project loading was attempted but did not produce semantic projects and documents. DotDet used project-file and syntax fallback analysis.",
+            false);
     }
 
     private async Task<SemanticContextLoadResult> LoadSemanticContextAsync(
@@ -1120,3 +1179,9 @@ public sealed record AnalysisLoadOptions(bool AllowMSBuildWorkspace, bool AllowM
             : new AnalysisLoadOptions(AllowMSBuildWorkspace: false, AllowMSBuildEvaluation: false);
     }
 }
+
+public sealed record AnalysisFidelityMetadata(
+    string AnalysisFidelity,
+    bool SemanticAnalysisSkipped,
+    string? SemanticAnalysisSkippedReason,
+    bool HasSemanticData);

@@ -2,10 +2,10 @@
 
 This is an intentionally imperfect .NET 9 sample solution for testing DotDet.
 
-Paste this solution path into the DotDet dashboard:
+From the DotDet repository root, the sample solution is located at:
 
 ```text
-C:\Users\cezar\Documents\Codex\2026-07-06\build-the-mvp-for-a-project\samples\Forge.SampleShop\Forge.SampleShop.slnx
+samples/Forge.SampleShop/Forge.SampleShop.slnx
 ```
 
 The sample is designed to produce findings across multiple categories:

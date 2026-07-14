@@ -1,57 +1,142 @@
 # DotDet
 
-DotDet is a .NET engineering analysis platform. It analyzes a local `.sln`/`.slnx` file or an uploaded zipped .NET solution and returns a production-readiness report for architecture, dependency injection, EF Core, security/configuration, and API readiness.
+> **v0.1 Preview** - DotDet is under active calibration. Review findings and
+> recommendations with engineering judgment before using them as release gates.
 
-The MVP is intentionally stateless: the ASP.NET Core API analyzes the submitted solution and returns a JSON report directly to the React dashboard.
+DotDet is a production-readiness analysis workbench for ASP.NET Core solutions.
+It connects static findings to source evidence, confidence, detection method,
+Microsoft guidance, and a practical remediation path. The interface is designed
+for developers and technical leads reviewing whether a solution is ready to
+operate in production.
 
-## Tech Stack
+DotDet is useful for ASP.NET Core teams that want a structured first pass across
+architecture boundaries, dependency injection, EF Core migrations,
+security/configuration, and API readiness. It complements code review and
+specialized security or runtime tooling; it does not replace them.
 
-- Backend: .NET 9, ASP.NET Core Web API, C#
-- Frontend: React, TypeScript, Vite
-- Styling: Tailwind CSS
-- Analysis: Roslyn syntax and semantic APIs, MSBuildWorkspace where available, project-file/config-file scanning
-- Storage: in-memory request/response only
+## Current capabilities
 
-## Project Structure
+### Analysis sources
+
+| Source | Access | Analysis fidelity |
+| --- | --- | --- |
+| Bundled sample | Public, rate-limited | Semantic when Roslyn/MSBuild loading succeeds |
+| ZIP upload | Authenticated | Safe syntax analysis in the web process |
+| Public GitHub repository | Authenticated | Safe syntax analysis in the web process |
+| Private GitHub repository | Authenticated, explicit repository permission | Safe syntax analysis in the web process |
+| Local path | Development only | Semantic when Roslyn/MSBuild loading succeeds |
+
+Untrusted ZIP and GitHub content does not cross the in-process MSBuild execution
+boundary. Full semantic analysis for those sources is deferred until DotDet has
+an isolated analysis worker or container boundary.
+
+### Analyzer categories
+
+- **Architecture** - project dependencies, layer inference, boundary violations,
+  cycles, and architecture-map evidence.
+- **Dependency Injection** - constructor dependencies, registrations, duplicate
+  registrations, lifetime risks, framework-provided service exclusions, and
+  common registration patterns such as MediatR.
+- **EF Core and migrations** - `DbContext` and entity inspection, key patterns,
+  migration operations, destructive-change risk, and raw SQL indicators.
+- **Security and configuration** - configuration secrets, connection-string
+  sensitivity, CORS, HTTPS, JWT setup, and authentication middleware.
+- **API readiness** - API/Web UI intent, controllers and minimal APIs, OpenAPI,
+  exception handling, health checks, logging, and validation signals.
+
+### Workbench features
+
+- Production-readiness and category scoring with confidence-aware findings
+- Source-linked findings, Code Explorer, and an Engineering Guide
+- Architecture map and project dependency graph
+- Rule Explorer with detection logic, examples, and Microsoft documentation
+- Finding dispositions and repository-scoped suppressions
+- Saved, user-scoped analysis history without retained raw source
+- JSON, Markdown, and standalone printable HTML reports
+- GitHub OAuth login and optional private-repository access
+- Rate limits, per-caller concurrency control, and analysis timeouts
+
+## Security and privacy
+
+DotDet keeps GitHub access tokens on the backend and protects stored repository
+tokens with ASP.NET Core Data Protection. Tokens are not returned to the browser
+or written into reports and history. Live analysis can include source preview for
+the current session, while history, browser persistence, and default exports are
+sanitized and do not retain full source files. Server and temporary paths are
+removed from API report data, including root-cause keys.
+
+Uploaded and downloaded archives are size-limited, entry-limited, checked for
+unsafe paths, extracted into temporary DotDet-owned directories, and cleaned up
+after analysis. Local filesystem path analysis is blocked outside the
+Development environment.
+
+Read [Security](docs/security.md) and
+[Private GitHub repository security](docs/private-github-security.md) before
+enabling private-repository access.
+
+## Engine maturity
+
+The engine is in **Preview / Calibration**. DotDet combines Roslyn syntax and
+semantic APIs, project/configuration inspection, and conservative heuristics.
+Fidelity metadata states whether an analysis used semantic coverage, degraded
+project loading, syntax fallback, or safe syntax analysis. Rules are being
+calibrated against realistic ASP.NET Core repositories, including eShopOnWeb and
+SchemaArchitect, with a preference for fewer high-confidence findings over broad
+but noisy coverage.
+
+See [Engine maturity](docs/engine-maturity.md),
+[Rule quality principles](docs/rule-quality.md), and
+[Calibration](docs/calibration.md).
+
+## Interface preview
+
+The repository currently includes the product logo and landing-page media but no
+maintained workbench screenshot set. Screenshots and a shareable sample report
+will be added as the Preview UI stabilizes. You can generate the current report
+experience by running the bundled sample analysis.
+
+## Repository layout
 
 ```text
-backend/Forge.Api      ASP.NET Core API and analyzer services
-frontend               React dashboard
-Forge.slnx             Solution file for the backend project
+backend/Forge.Api          ASP.NET Core API and analysis engine
+backend/Forge.Api.Tests    Backend regression and analyzer tests
+frontend                   React/TypeScript workbench and Playwright tests
+samples/Forge.SampleShop   Intentionally imperfect demonstration solution
+docs                       Public product, security, and analysis documentation
+Forge.slnx                 .NET solution
 ```
 
-## Run The Backend
+## Local development
+
+### Prerequisites
+
+- .NET 9 SDK
+- Node.js and npm compatible with the versions in `frontend/package-lock.json`
+- A GitHub OAuth application for authenticated workflows
+
+Configure development OAuth credentials with .NET user secrets or environment
+variables. Do not commit them:
+
+```powershell
+dotnet user-secrets set "Authentication:GitHub:ClientId" "<client-id>" --project backend/Forge.Api/Forge.Api.csproj
+dotnet user-secrets set "Authentication:GitHub:ClientSecret" "<client-secret>" --project backend/Forge.Api/Forge.Api.csproj
+```
+
+Use these local GitHub OAuth application values:
+
+```text
+Homepage URL:              http://127.0.0.1:5173
+Authorization callback:   http://127.0.0.1:5241/signin-github
+```
+
+Run the backend:
 
 ```powershell
 dotnet restore backend/Forge.Api/Forge.Api.csproj
 dotnet run --project backend/Forge.Api/Forge.Api.csproj --launch-profile http
 ```
 
-The API listens on `http://localhost:5241` with the default launch profile.
-
-Available endpoints:
-
-- `POST /api/analysis/analyze-path`
-- `POST /api/analysis/analyze-zip`
-- `GET /health`
-
-Analyze a local solution path:
-
-```powershell
-Invoke-RestMethod `
-  -Uri http://localhost:5241/api/analysis/analyze-path `
-  -Method Post `
-  -ContentType 'application/json' `
-  -Body '{"solutionPath":"C:\\src\\Acme\\Acme.sln"}'
-```
-
-Analyze a zipped solution with multipart form field `file`:
-
-```powershell
-curl.exe -F "file=@C:\src\Acme.zip" http://localhost:5241/api/analysis/analyze-zip
-```
-
-## Run The Frontend
+Run the frontend in another terminal:
 
 ```powershell
 cd frontend
@@ -59,95 +144,84 @@ npm install
 npm run dev
 ```
 
-The dashboard runs at `http://localhost:5173` and calls `http://localhost:5241` by default.
+The default development URLs are:
 
-To point the dashboard at a different API URL:
+- Frontend: `http://127.0.0.1:5173`
+- API: `http://127.0.0.1:5241`
+- Health check: `http://127.0.0.1:5241/health`
+
+Set `VITE_DOTDET_API_URL` when the frontend should use another API origin.
+`VITE_FORGE_API_URL` remains a compatibility fallback.
+
+## Validation
+
+Run backend validation:
 
 ```powershell
-$env:VITE_DOTDET_API_URL='http://localhost:5000'
-npm run dev
+dotnet build backend/Forge.Api/Forge.Api.csproj
+dotnet test backend/Forge.Api.Tests/Forge.Api.Tests.csproj
+dotnet list Forge.slnx package --vulnerable --include-transitive
 ```
 
-`VITE_FORGE_API_URL` is still accepted as a compatibility fallback.
+Run frontend validation:
 
-## Report Shape
+```powershell
+cd frontend
+npm run lint
+npm run build
+npm run test:e2e
+npm audit --omit=dev
+```
 
-The API returns:
+## Known limitations
 
-- `solutionName`
-- `analyzedAt`
-- `overallScore`
-- `categoryScores`
-- `issues`
-- `projectGraph`
+- Untrusted ZIP and GitHub analysis uses safe syntax mode until an isolated
+  semantic-analysis worker exists.
+- DI analysis is not a runtime service-provider simulation.
+- Security/configuration and migration findings are static indicators, not proof
+  of runtime behavior or operational safety.
+- Architecture intent is inferred from references, source, and conventional
+  project naming.
+- GitHub analysis currently targets the default branch; branch and pull-request
+  analysis are not implemented.
 
-Issue severities are `Info`, `Warning`, `Error`, and `Critical`. Scoring starts at 100 and subtracts:
+The complete list is maintained in
+[Known limitations](docs/known-limitations.md).
 
-- Critical: 15
-- Error: 8
-- Warning: 4
-- Info: 1
+## Roadmap
 
-Scores never go below 0. Category scores are calculated from issues in that category.
+Near-term work focuses on calibration, an isolated worker for semantic analysis
+of untrusted repositories, branch and pull-request workflows, host-scoped DI
+reasoning, and environment-aware configuration severity. See the
+[public roadmap](docs/roadmap.md).
 
-## MVP Analyzers
+## Contributing
 
-Architecture:
+Issues and focused pull requests are welcome. Before proposing an analyzer rule,
+read [Rule quality principles](docs/rule-quality.md). Include representative
+positive and negative fixtures, explain applicability and confidence, and add a
+regression test for any false positive being fixed. Run the validation commands
+above before submitting changes.
 
-- Project references and dependency graph
-- Circular project dependencies
-- Domain references to Infrastructure/Web/API/EF Core/ASP.NET Core
-- Application references to Infrastructure
-- Lower layers referencing API/Web projects
+For support or responsible disclosure, use the guidance in
+[Security](docs/security.md). General product issues can be opened in the
+[DotDet GitHub repository](https://github.com/cezarpedroso/dotdet/issues).
 
-Dependency Injection:
+## License
 
-- Constructor-injected services
-- Registrations in `Program.cs` or `Startup.cs`
-- Symbol-aware type matching when MSBuild/Roslyn can load the solution
-- Source-defined composition methods such as `AddApplication()` or `AddInfrastructure()`
-- Injected services that appear unregistered
-- Duplicate registrations
+No public license file is currently included. Until a license is added, the
+repository should not be assumed to grant rights beyond those provided by its
+owner. A release license should be selected before broader distribution or
+external contribution.
 
-EF Core:
+## Documentation
 
-- EF Core package references
-- `DbContext` classes and `DbSet<TEntity>` properties
-- Migration files with `DropTable`, `DropColumn`, or raw SQL
-- Entities missing conventional primary key patterns
+Start with the [DotDet documentation index](docs/README.md):
 
-Security/Configuration:
-
-- `appsettings*.json`
-- Possible secrets and connection strings in config
-- CORS policies using `AllowAnyOrigin`
-- Missing HTTPS redirection
-- JWT package usage without auth middleware
-- Weak JWT issuer/audience/key values
-
-API Readiness:
-
-- Controllers and minimal APIs
-- Swagger/OpenAPI setup
-- Health checks
-- Global exception handling
-- Structured logging
-- Validation patterns
-
-## Current MVP Limitations
-
-- Heuristics are intentionally conservative and source-based; DotDet does not perform full semantic dataflow analysis yet.
-- Some framework extension methods may register services that the DI analyzer cannot infer.
-- MSBuildWorkspace is used when possible, but DotDet falls back to project-file discovery if a solution cannot be fully loaded.
-- Zip analysis extracts to a temporary folder for the request and deletes it after the response.
-- There is no database, authentication, CI integration, historical trend view, or auto-fix engine.
-
-## Future Roadmap
-
-- Semantic Roslyn analyzers with symbol resolution and richer cross-project reasoning
-- SARIF export and CI/PR annotations
-- Analyzer rule configuration and severity overrides
-- Historical report storage and trend dashboards
-- Rich dependency graph visualization
-- Auto-fix suggestions and guided remediation playbooks
-- Authentication and team/project workspaces
+- [Security](docs/security.md)
+- [Private GitHub repository security](docs/private-github-security.md)
+- [Engine maturity](docs/engine-maturity.md)
+- [Rule quality principles](docs/rule-quality.md)
+- [Calibration](docs/calibration.md)
+- [Known limitations](docs/known-limitations.md)
+- [Roadmap](docs/roadmap.md)

@@ -379,6 +379,8 @@ const API_BASE_URL =
   ?? (import.meta.env.DEV ? `http://${formattedLocalApiHost}:5241` : window.location.origin)
 const DOTDET_REPOSITORY_URL = 'https://github.com/cezarpedroso/dotdet'
 const DOTDET_ISSUES_URL = 'https://github.com/cezarpedroso/DotDet/issues'
+const DOTDET_README_URL = `${DOTDET_REPOSITORY_URL}/blob/main/README.md`
+const DOTDET_DOCS_URL = `${DOTDET_REPOSITORY_URL}/blob/main/docs`
 const SCHEMA_ARCHITECT_URL = 'https://schemarchitect.azurewebsites.net/'
 
 const explorerWidthStorageKey = 'det.codeExplorer.explorerWidth'
@@ -1936,7 +1938,7 @@ function HomePage({
                 preload="metadata"
                 aria-label="DotDet production-readiness workbench demonstration"
               >
-                <source src="/dotdetvideo.mp4" type="video/mp4" />
+                <source src="/dotdetv.mp4" type="video/mp4" />
               </video>
             </div>
           </div>
@@ -2026,219 +2028,209 @@ function HomePage({
   )
 }
 
-const docsCheckCategories = [
-  'Architecture boundaries',
-  'Dependency Injection',
-  'EF Core and migrations',
-  'Security and configuration',
-  'API readiness',
+const docsQuickLinks: Array<{
+  description: string
+  href: string
+  icon: LucideIcon
+  label: string
+  section: string
+}> = [
+  { label: 'Getting started', description: 'Run DotDet locally and analyze the bundled sample.', href: DOTDET_README_URL, icon: Play, section: 'Start' },
+  { label: 'Security & privacy', description: 'Understand source, token, history, and archive boundaries.', href: `${DOTDET_DOCS_URL}/security.md`, icon: ShieldCheck, section: 'Trust' },
+  { label: 'Private GitHub repositories', description: 'Review permissions, token handling, and disconnect behavior.', href: `${DOTDET_DOCS_URL}/private-github-security.md`, icon: FolderGit2, section: 'Trust' },
+  { label: 'Engine maturity', description: 'See current coverage, fidelity, and calibration status.', href: `${DOTDET_DOCS_URL}/engine-maturity.md`, icon: FileSearch, section: 'Engine' },
+  { label: 'Known limitations', description: 'Read the boundaries of the v0.1 Preview engine and analysis model.', href: `${DOTDET_DOCS_URL}/known-limitations.md`, icon: AlertTriangle, section: 'Preview' },
+  { label: 'Roadmap', description: 'Review planned calibration, worker, branch, and PR work.', href: `${DOTDET_DOCS_URL}/roadmap.md`, icon: GitBranch, section: 'Project' },
+  { label: 'Changelog', description: 'See the capabilities and hardening delivered in v0.1 Preview.', href: '/changelog', icon: FileText, section: 'Release' },
 ]
 
-const docsAnalysisFlow = [
-  'User submits a ZIP, GitHub repository, or sample project.',
-  'Backend downloads or extracts the project into a temporary folder.',
-  'DotDet discovers .sln, .slnx, and project files.',
-  'Projects are loaded with MSBuildWorkspace where possible.',
-  'If full solution loading is unavailable, DotDet falls back to project-file discovery.',
-  'Roslyn syntax and semantic analysis inspects code symbols, references, and usage patterns.',
-  'Project/config scanners inspect .csproj files, appsettings*.json, migrations, and project references.',
-  'Findings are grouped by root cause.',
-  'Scoring and the engineering assessment are generated.',
-  'JSON is returned to the React dashboard.',
-  'Logged-in users get a sanitized history snapshot.',
-]
+const docsAnalysisSources = [
+  ['ZIP uploads', 'Authenticated. Extracted through the guarded archive path and analyzed in safe syntax mode.'],
+  ['Public GitHub', 'Authenticated. DotDet downloads the default branch archive server-side.'],
+  ['Private GitHub', 'Authenticated with an explicit repository-access upgrade; tokens remain server-side.'],
+  ['Sample project', 'Public and rate-limited. Intended for evaluating the workbench and report flow.'],
+  ['Local path', 'Development only. Blocked outside the Development environment.'],
+] as const
+
+const docsAnalyzerCoverage = [
+  ['Architecture boundaries', 'Project graph, inferred layers, cycles, and dependency violations.'],
+  ['Dependency injection reliability', 'Constructor requirements, registrations, framework exclusions, and lifetime risks.'],
+  ['EF Core migration risk', 'DbContext/entity evidence, migration operations, raw SQL, and destructive-change indicators.'],
+  ['Security and configuration', 'Secrets, connection strings, CORS, HTTPS, JWT, and authentication middleware.'],
+  ['API readiness', 'API/Web UI intent, endpoints, OpenAPI, exception handling, health, logging, and validation.'],
+] as const
+
+const docsFullIndex = [
+  ['Project README', DOTDET_README_URL],
+  ['Security', `${DOTDET_DOCS_URL}/security.md`],
+  ['Private GitHub security', `${DOTDET_DOCS_URL}/private-github-security.md`],
+  ['Engine maturity', `${DOTDET_DOCS_URL}/engine-maturity.md`],
+  ['Rule quality principles', `${DOTDET_DOCS_URL}/rule-quality.md`],
+  ['Calibration', `${DOTDET_DOCS_URL}/calibration.md`],
+  ['Known limitations', `${DOTDET_DOCS_URL}/known-limitations.md`],
+  ['Roadmap', `${DOTDET_DOCS_URL}/roadmap.md`],
+] as const
 
 function DocsPage() {
   return (
     <section className="det-docs-page">
       <div className="det-docs-shell">
         <header className="det-docs-header">
-          <div className="det-docs-eyebrow">Documentation</div>
+          <div className="det-docs-eyebrow">v0.1 Preview documentation</div>
           <h2>DotDet Documentation</h2>
           <p>
-            DotDet analyzes ASP.NET Core and .NET solutions and produces a production-readiness report developers can inspect, share, and act on.
+            Learn how DotDet analyzes ASP.NET Core applications, handles private repositories, scores production-readiness findings, and protects source code during analysis.
           </p>
+          <div className="det-docs-header-actions" aria-label="Documentation actions">
+            <a href={DOTDET_README_URL} className="det-docs-primary-link">
+              Start with the README
+              <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+            </a>
+            <a href="/changelog" className="det-docs-secondary-link">
+              View v0.1 changes
+              <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+            </a>
+          </div>
         </header>
 
         <div className="det-docs-layout">
           <aside className="det-docs-toc" aria-label="Documentation sections">
-            <a href="#what-dotdet-does">What DotDet does</a>
-            <a href="#checks">What DotDet checks</a>
-            <a href="#analysis-ways">Ways to analyze</a>
-            <a href="#analysis-flow">How analysis works</a>
-            <a href="#project-loading">Project loading</a>
-            <a href="#semantic-analysis">Semantic analysis</a>
-            <a href="#findings-scoring">Findings and scoring</a>
-            <a href="#noise-control">Noise control</a>
-            <a href="#github-analysis">GitHub analysis</a>
-            <a href="#source-preview">Source preview</a>
-            <a href="#exports">Reports and exports</a>
+            <span className="det-docs-toc-label">On this page</span>
+            <a href="#quick-links">Quick links</a>
+            <a href="#analysis-sources">Analysis sources</a>
+            <a href="#analyzer-coverage">Analyzer coverage</a>
             <a href="#security-privacy">Security and privacy</a>
-            <a href="#limitations">Current limitations</a>
-            <a href="#developer-notes">Developer notes</a>
+            <a href="#engine-maturity">Engine maturity</a>
+            <a href="#full-documentation">Full documentation</a>
           </aside>
 
           <div className="det-docs-content">
-            <section id="what-dotdet-does" className="det-docs-section">
-              <h3>What DotDet Does</h3>
-              <p>
-                DotDet reviews a submitted .NET solution and turns production-readiness signals into a structured engineering report. The goal is to help teams find release risks before deployment, not to replace human code review.
-              </p>
-            </section>
-
-            <section id="checks" className="det-docs-section">
-              <h3>What DotDet Checks</h3>
-              <div className="det-docs-card-grid">
-                {docsCheckCategories.map((item) => (
-                  <div key={item} className="det-docs-mini-card">{item}</div>
+            <section id="quick-links" className="det-docs-section">
+              <div className="det-docs-section-heading">
+                <div>
+                  <span className="det-docs-section-index">01</span>
+                  <h3>Quick links</h3>
+                </div>
+                <p>Use the repository documentation for the complete product and engine reference.</p>
+              </div>
+              <div className="det-docs-link-list">
+                {docsQuickLinks.map((item) => (
+                  <a key={item.label} href={item.href} className="det-docs-link-row">
+                    <item.icon className="det-docs-link-icon" aria-hidden="true" />
+                    <span className="det-docs-link-copy">
+                      <span>{item.label}</span>
+                      <small>{item.description}</small>
+                    </span>
+                    <span className="det-docs-link-section">{item.section}</span>
+                    {item.href.startsWith('http')
+                      ? <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                      : <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />}
+                  </a>
                 ))}
               </div>
             </section>
 
-            <section id="analysis-ways" className="det-docs-section">
-              <h3>Ways To Analyze A Project</h3>
-              <div className="det-docs-two-column">
+            <section id="analysis-sources" className="det-docs-section">
+              <div className="det-docs-section-heading">
                 <div>
-                  <h4>Upload ZIP</h4>
-                  <p>Upload a zipped .NET solution or repository snapshot. DotDet extracts it temporarily, analyzes it, then removes temporary files.</p>
+                  <span className="det-docs-section-index">02</span>
+                  <h3>What DotDet analyzes</h3>
                 </div>
-                <div>
-                  <h4>GitHub Repository</h4>
-                  <p>Submit a repository. DotDet downloads the default branch ZIP server-side and reuses the same ZIP safety and analysis path.</p>
-                </div>
-                <div>
-                  <h4>Sample Project</h4>
-                  <p>Run the bundled sample ASP.NET Core project to see findings, Code Explorer, Engineering Guide, and exports immediately.</p>
-                </div>
-                <div>
-                  <h4>Local Path Analysis</h4>
-                  <p>Local path analysis is intended for development builds where the backend can access the same filesystem as the submitted path.</p>
-                </div>
+                <p>Repository analysis is authenticated; the public sample remains available under request limits.</p>
               </div>
-            </section>
-
-            <section id="analysis-flow" className="det-docs-section">
-              <h3>How Analysis Works</h3>
-              <ol className="det-docs-steps">
-                {docsAnalysisFlow.map((step) => (
-                  <li key={step}>{step}</li>
+              <div className="det-docs-definition-list">
+                {docsAnalysisSources.map(([label, description]) => (
+                  <div key={label} className="det-docs-definition-row">
+                    <h4>{label}</h4>
+                    <p>{description}</p>
+                  </div>
                 ))}
-              </ol>
-            </section>
-
-            <section id="project-loading" className="det-docs-section">
-              <h3>Project Loading And Discovery</h3>
-              <p>
-                DotDet starts by finding the solution boundary. It prefers `.sln` and `.slnx` files, then resolves SDK-style projects, project references, package references, and shared build configuration such as `Directory.Build.props` and `Directory.Build.targets` where the local MSBuild environment allows it.
-              </p>
-              <p>
-                When `MSBuildWorkspace` can load the solution, analyzers get stronger project metadata and Roslyn compilations. When a real-world solution cannot be loaded fully, DotDet falls back to project-file discovery so the report can still return useful findings instead of failing the whole analysis.
-              </p>
-              <div className="det-docs-code-block">
-                <span>Preferred path: solution file {'->'} MSBuildWorkspace {'->'} Roslyn compilation {'->'} semantic analyzers</span>
-                <span>Fallback path: project discovery {'->'} project/reference scanners {'->'} reduced-fidelity findings</span>
-                <span>Project graph: normalized project references plus discovered dependency edges</span>
               </div>
             </section>
 
-            <section id="semantic-analysis" className="det-docs-section">
-              <h3>Roslyn Semantic Analysis</h3>
-              <p>
-                DotDet uses Roslyn syntax and semantic models where practical. Semantic checks inspect symbols, inheritance, interface implementations, constructor parameters, extension method calls, attributes, referenced assemblies, and project-to-project references.
-              </p>
-              <div className="det-docs-two-column">
+            <section id="analyzer-coverage" className="det-docs-section">
+              <div className="det-docs-section-heading">
                 <div>
-                  <h4>High-confidence signals</h4>
-                  <p>Examples include a type inheriting from `DbContext`, a controller discovered by ASP.NET Core symbols, an explicit project reference, or a middleware call resolved from startup code.</p>
+                  <span className="det-docs-section-index">03</span>
+                  <h3>Analyzer coverage</h3>
                 </div>
+                <p>Findings are evidence-first, source-linked, and designed to explain the next engineering action.</p>
+              </div>
+              <div className="det-docs-definition-list">
+                {docsAnalyzerCoverage.map(([label, description]) => (
+                  <div key={label} className="det-docs-definition-row">
+                    <h4>{label}</h4>
+                    <p>{description}</p>
+                  </div>
+                ))}
+              </div>
+              <p className="det-docs-note">
+                Every supported finding can include severity, confidence, project, file, line, detection method, evidence, production impact, and remediation guidance.
+              </p>
+            </section>
+
+            <section id="security-privacy" className="det-docs-section det-docs-emphasis-section">
+              <div className="det-docs-section-heading">
                 <div>
-                  <h4>Lower-confidence signals</h4>
-                  <p>Examples include naming conventions, partial configuration patterns, or registrations that are inferred from usage when full semantic loading is unavailable.</p>
+                  <span className="det-docs-section-index">04</span>
+                  <h3>Security and privacy</h3>
                 </div>
+                <a href={`${DOTDET_DOCS_URL}/security.md`} className="det-docs-inline-link">
+                  Read the security model
+                  <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                </a>
               </div>
-            </section>
-
-            <section id="findings-scoring" className="det-docs-section">
-              <h3>Findings, Evidence, And Scoring</h3>
-              <p>
-                Each finding is designed to explain why it exists. Reports can include rule ID, severity, confidence, detection method, file and line, evidence, production impact, recommendation, examples, and Microsoft documentation links.
-              </p>
-              <p>
-                Scoring is category-weighted instead of a raw count of findings. Security, API readiness, EF Core, Dependency Injection, and Architecture each contribute to the final production-readiness score, while confirmed critical blockers can cap the grade.
-              </p>
-              <div className="det-docs-stack">
-                <span>High confidence: proven by semantic analysis or explicit project configuration</span>
-                <span>Medium confidence: strongly inferred through syntax or usage patterns</span>
-                <span>Low confidence: heuristic or best-effort and generally less severe</span>
-              </div>
-            </section>
-
-            <section id="noise-control" className="det-docs-section">
-              <h3>Noise Control And Suppressions</h3>
-              <p>
-                DotDet favors fewer, clearer findings over a long analyzer dump. It groups repeated findings by root cause, excludes test projects from deployment-readiness scoring by default, and applies API production rules only to real ASP.NET Core entry-point projects.
-              </p>
-              <p>
-                Findings can be marked as Open, Ignore, False Positive, or Accepted Risk. Repository-level suppressions are designed to be stored in `dotdet.suppressions.json` so teams can document risk decisions without deleting analyzer evidence.
-              </p>
-            </section>
-
-            <section id="github-analysis" className="det-docs-section">
-              <h3>GitHub Repository Analysis</h3>
-              <p>
-                Public repositories are supported by default. Private repositories require explicit repository access, and DotDet keeps the token server-side while reusing the same ZIP safety validation and analysis path.
-              </p>
-            </section>
-
-            <section id="source-preview" className="det-docs-section">
-              <h3>Live Source Preview Vs Saved Reports</h3>
-              <p>
-                Live analysis can show source preview in Code Explorer so developers can jump from a finding to the affected file. Saved history snapshots intentionally do not store raw source code; they preserve findings, scores, evidence, and exports without retaining full repository contents.
-              </p>
-            </section>
-
-            <section id="exports" className="det-docs-section">
-              <h3>Reports And Exports</h3>
-              <div className="det-docs-code-block">
-                <span>Dashboard workbench</span>
-                <span>HTML report for team review or print-to-PDF</span>
-                <span>Markdown report for GitHub issues, PR notes, and READMEs</span>
-                <span>JSON export for machine-readable details</span>
-                <span>Saved reports/history for logged-in users</span>
-              </div>
-            </section>
-
-            <section id="security-privacy" className="det-docs-section">
-              <h3>Security And Privacy</h3>
               <ul className="det-docs-bullets">
-                <li>DotDet does not execute analyzed code.</li>
-                <li>Temporary extraction folders are deleted after analysis.</li>
-                <li>Uploaded ZIPs and downloaded GitHub archives are not stored.</li>
-                <li>Raw source code is not stored in saved history snapshots.</li>
-                <li>Private repository tokens are protected server-side and are never sent to React or stored in report history.</li>
+                <li>GitHub tokens stay server-side and are protected at rest.</li>
+                <li>Saved history is sanitized and does not store raw source.</li>
+                <li>Browser storage and default exports remove source content and server paths.</li>
+                <li>Root-cause keys use repository-relative paths.</li>
+                <li>Untrusted ZIP and GitHub inputs use safe syntax analysis in v0.1 Preview.</li>
               </ul>
-            </section>
-
-            <section id="limitations" className="det-docs-section">
-              <h3>Current Limitations</h3>
-              <p>
-                Some analyzer behavior remains heuristic when a solution cannot be loaded semantically. Dependency Injection registrations, API/Web project intent, and architecture layer inference are continually calibrated to reduce false positives. Branch selection, pull-request comments, checks, and webhooks are not implemented yet.
+              <p className="det-docs-note">
+                Full semantic Roslyn/MSBuild analysis for untrusted repositories requires a future isolated worker or container boundary.
               </p>
             </section>
 
-            <section id="developer-notes" className="det-docs-section">
-              <h3>Developer Notes</h3>
-              <div className="det-docs-stack">
-                <span>Backend: ASP.NET Core / .NET</span>
-                <span>Frontend: React / Vite / TypeScript</span>
-                <span>Analyzer: Roslyn / MSBuildWorkspace</span>
-                <span>Exports: JSON / Markdown / HTML</span>
-                <span>History: sanitized snapshots</span>
+            <section id="engine-maturity" className="det-docs-section">
+              <div className="det-docs-section-heading">
+                <div>
+                  <span className="det-docs-section-index">05</span>
+                  <h3>Engine maturity</h3>
+                </div>
+                <span className="det-docs-status">v0.1 Preview / Calibration</span>
               </div>
-              <a href={DOTDET_REPOSITORY_URL} className="det-docs-github-link">
-                View project on GitHub
-                <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-              </a>
+              <p>
+                DotDet is evidence-first and calibrated against real ASP.NET Core repositories. It is designed to reduce obvious false positives, but it is not a replacement for manual architecture review, penetration testing, full SAST/DAST, runtime observability, or maintainer code review.
+              </p>
+              <div className="det-docs-related-links" aria-label="Engine documentation">
+                <a href={`${DOTDET_DOCS_URL}/engine-maturity.md`}>Engine maturity <ExternalLink className="h-3 w-3" aria-hidden="true" /></a>
+                <a href={`${DOTDET_DOCS_URL}/calibration.md`}>Calibration <ExternalLink className="h-3 w-3" aria-hidden="true" /></a>
+                <a href={`${DOTDET_DOCS_URL}/rule-quality.md`}>Rule quality <ExternalLink className="h-3 w-3" aria-hidden="true" /></a>
+                <a href={`${DOTDET_DOCS_URL}/known-limitations.md`}>Known limitations <ExternalLink className="h-3 w-3" aria-hidden="true" /></a>
+              </div>
+            </section>
+
+            <section id="full-documentation" className="det-docs-section">
+              <div className="det-docs-section-heading">
+                <div>
+                  <span className="det-docs-section-index">06</span>
+                  <h3>Full documentation</h3>
+                </div>
+                <p>The Markdown set is versioned with the source and reviewed with each Preview release.</p>
+              </div>
+              <div className="det-docs-index-list">
+                {docsFullIndex.map(([label, href]) => (
+                  <a key={label} href={href}>
+                    <span>{label}</span>
+                    <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                  </a>
+                ))}
+                <a href="/changelog">
+                  <span>Changelog</span>
+                  <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+                </a>
+              </div>
             </section>
           </div>
         </div>
@@ -2251,59 +2243,63 @@ const changelogSections = [
   {
     title: 'Analysis engine',
     items: [
-      'Roslyn/MSBuild-backed solution analysis',
-      '.sln and .slnx loading where available',
-      'fallback project discovery',
-      'architecture, DI, EF Core, security/configuration, and API readiness analyzers',
+      'Added ASP.NET Core project discovery for .sln, .slnx, and .csproj projects.',
+      'Added analyzers for architecture boundaries, dependency injection, EF Core migrations, security/configuration, and API readiness.',
+      'Added source-linked findings with severity, confidence, detection method, evidence, and remediation guidance.',
+      'Added root-cause grouping and score explanations.',
     ],
   },
   {
-    title: 'Findings and guidance',
+    title: 'GitHub and analysis sources',
     items: [
-      'source-linked findings',
-      'severity, confidence, and detection method',
-      'remediation guidance with good and bad examples',
-      'Microsoft documentation links',
-      'root-cause grouping and noise reduction',
+      'Added ZIP upload analysis.',
+      'Added public and private GitHub repository analysis.',
+      'Added sample project analysis.',
+      'Restricted local path analysis to Development mode.',
     ],
   },
   {
-    title: 'Reports and exports',
+    title: 'Security and privacy hardening',
     items: [
-      'interactive dashboard/workbench',
-      'Code Explorer for live results',
-      'Engineering Guide',
-      'JSON export',
-      'Markdown export',
-      'standalone HTML report export',
+      'Kept GitHub tokens server-side and protected repository access at rest.',
+      'Sanitized saved history, browser storage, and default exports without retaining raw source.',
+      'Changed root-cause keys and report paths to repository-relative values.',
+      'Blocked local path analysis outside Development and kept untrusted ZIP/GitHub input in safe syntax mode.',
+      'Added rate limits, per-caller concurrency limits, and analysis timeouts.',
     ],
   },
   {
-    title: 'GitHub and uploads',
+    title: 'Analyzer quality improvements',
     items: [
-      'ZIP upload analysis',
-      'GitHub repository analysis',
-      'default branch analysis',
-      'live source preview for current GitHub analysis',
-      'sanitized saved history snapshots',
+      'Added API/Web UI intent detection for MVC, Razor, Blazor, minimal API, and mixed hosts.',
+      'Reduced DI false positives for ASP.NET Core framework-provided services and added MediatR registration detection.',
+      'Limited destructive EF migration checks to Up() operations.',
+      'Improved clean-report consistency, root-cause path sanitization, and fidelity reporting.',
+      'Prevented Info and low-confidence findings from driving production readiness risk.',
     ],
   },
   {
-    title: 'Workspace',
+    title: 'Reporting and workflow',
     items: [
-      'GitHub login',
-      'Dashboard, Analyze, Reports/history, Rules, and Settings pages',
-      'finding dispositions: Open, Ignore, False Positive, Accepted Risk',
+      'Added saved analysis history and finding dispositions.',
+      'Added Code Explorer, Engineering Guide, and architecture overview.',
+      'Added JSON, Markdown, and standalone HTML exports.',
+      'Added sanitized historical reports with an explicit source-preview-unavailable state.',
+    ],
+  },
+  {
+    title: 'Public UI and documentation',
+    items: [
+      'Added the public landing page, Docs, Changelog, Contact, and product navigation.',
+      'Published security, private GitHub security, engine maturity, rule quality, calibration, known limitations, and roadmap documentation.',
     ],
   },
   {
     title: 'Known limitations',
     items: [
-      'branch selection is not supported yet',
-      'no PR comments, checks, or webhooks yet',
-      'historical reports do not store full source preview',
-      'some fallback-mode findings remain heuristic when semantic loading is unavailable',
-      'local JSON persistence is MVP-oriented',
+      'Untrusted ZIP and GitHub inputs use safe syntax analysis until isolated semantic worker support exists.',
+      'Branch and pull-request analysis remain future work.',
+      'DotDet is Preview software and complements rather than replaces human review and dedicated security testing.',
     ],
   },
 ]
@@ -2351,25 +2347,52 @@ function ContactPage() {
 function ChangelogPage() {
   return (
     <section className="det-docs-page">
-      <div className="det-docs-shell">
+      <div className="det-docs-shell det-changelog-shell">
         <header className="det-docs-header">
           <div className="det-docs-eyebrow">Changelog</div>
-          <h2>v0.1 Preview</h2>
-          <p>Current preview capabilities for production-readiness analysis, source-linked engineering guidance, and repository review workflows.</p>
+          <h2>Release notes</h2>
+          <p>Release notes for DotDet preview builds.</p>
         </header>
 
-        <div className="det-changelog-timeline">
-          {changelogSections.map((section) => (
-            <article key={section.title} className="det-changelog-item">
-              <h3>{section.title}</h3>
-              <ul className="det-docs-bullets">
-                {section.items.map((item) => (
-                  <li key={item}>{item}</li>
-                ))}
-              </ul>
-            </article>
-          ))}
-        </div>
+        <article className="det-changelog-release">
+          <header className="det-changelog-release-header">
+            <div>
+              <span className="det-changelog-version">v0.1 Preview</span>
+              <h3>Initial public preview</h3>
+            </div>
+            <span className="det-changelog-state">Preview / Calibration</span>
+          </header>
+          <p className="det-changelog-intro">
+            Initial public preview of DotDet, a production-readiness analysis platform for ASP.NET Core applications.
+          </p>
+
+          <div className="det-changelog-timeline">
+            {changelogSections.map((section, index) => (
+              <section key={section.title} className="det-changelog-item">
+                <div className="det-changelog-item-heading">
+                  <span>{String(index + 1).padStart(2, '0')}</span>
+                  <h4>{section.title}</h4>
+                </div>
+                <ul className="det-docs-bullets">
+                  {section.items.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+              </section>
+            ))}
+          </div>
+
+          <footer className="det-changelog-footer">
+            <div>
+              <span>Release documentation</span>
+              <p>For security and engine maturity details, see the Docs page.</p>
+            </div>
+            <a href="/docs">
+              Open Docs
+              <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+            </a>
+          </footer>
+        </article>
       </div>
     </section>
   )
@@ -2389,6 +2412,7 @@ function PublicFooter({ onNavigate }: { onNavigate: (page: StartPage) => void })
           <div>
             <div className="det-public-footer-brand">DotDet</div>
             <p>.NET production-readiness analysis with source-linked evidence.</p>
+            <p className="det-public-footer-credit">Built by Cezar Pedroso.</p>
           </div>
         </div>
         <nav aria-label="Footer navigation">
@@ -5789,6 +5813,7 @@ function sanitizeIssuePaths(issue: AnalysisIssue): AnalysisIssue {
     whyItMatters: sanitizeTextForBrowserPersistence(issue.whyItMatters),
     recommendedPattern: sanitizeTextForBrowserPersistence(issue.recommendedPattern),
     suggestedImplementation: sanitizeTextForBrowserPersistence(issue.suggestedImplementation),
+    rootCauseKey: sanitizeRootCauseKeyForBrowserPersistence(issue.rootCauseKey),
     evidence: issue.evidence?.map((item) => ({
       ...item,
       label: sanitizeTextForBrowserPersistence(item.label) ?? item.label,
@@ -5864,6 +5889,24 @@ function sanitizeTextForBrowserPersistence(value?: string) {
   return value
     .replace(/(?:[A-Za-z]:[\\/])[^\s"'<>|]+/g, (path) => safeTail(path))
     .replace(/\/(?:tmp|var|home|Users|private|mnt)\/[^\s"'<>|]+/gi, (path) => safeTail(path))
+}
+
+function sanitizeRootCauseKeyForBrowserPersistence(rootCauseKey?: string) {
+  if (!rootCauseKey) {
+    return rootCauseKey
+  }
+
+  return rootCauseKey
+    .split('|')
+    .map((segment) => {
+      const trimmed = segment.trim()
+      if (/^[A-Za-z]:[\\/]/.test(trimmed) || /^\/(?:tmp|var|home|Users|private|mnt)\//i.test(trimmed)) {
+        return '<unknown-file>'
+      }
+
+      return sanitizeTextForBrowserPersistence(segment) ?? segment
+    })
+    .join('|')
 }
 
 function safeSetLocalStorage(key: string, value: string) {

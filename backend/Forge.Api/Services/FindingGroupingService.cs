@@ -6,16 +6,16 @@ public sealed class FindingGroupingService
 {
     private static readonly StringComparer KeyComparer = StringComparer.OrdinalIgnoreCase;
 
-    public IReadOnlyList<AnalysisIssue> Group(IEnumerable<AnalysisIssue> issues)
+    public IReadOnlyList<AnalysisIssue> Group(IEnumerable<AnalysisIssue> issues, string? repositoryRoot = null)
     {
         var issueList = issues.ToArray();
         var groupedIssueIds = new HashSet<string>(StringComparer.Ordinal);
         var grouped = new List<AnalysisIssue>();
 
-        grouped.AddRange(GroupEfMigrationIssues(issueList, groupedIssueIds));
+        grouped.AddRange(GroupEfMigrationIssues(issueList, groupedIssueIds, repositoryRoot));
         grouped.AddRange(GroupDuplicateRegistrations(issueList, groupedIssueIds));
         grouped.AddRange(GroupUnregisteredDependencies(issueList, groupedIssueIds));
-        grouped.AddRange(GroupConnectionStrings(issueList, groupedIssueIds));
+        grouped.AddRange(GroupConnectionStrings(issueList, groupedIssueIds, repositoryRoot));
 
         grouped.AddRange(issueList.Where(issue => !groupedIssueIds.Contains(issue.Id)));
 
@@ -23,14 +23,17 @@ public sealed class FindingGroupingService
             .Select((issue, index) => issue with
             {
                 Id = $"{issue.RuleId ?? issue.Id}-{index + 1:D3}",
-                RootCauseKey = issue.RootCauseKey ?? BuildDefaultRootCauseKey(issue)
+                RootCauseKey = SanitizeRootCauseKey(
+                    issue.RootCauseKey ?? BuildDefaultRootCauseKey(issue, repositoryRoot),
+                    repositoryRoot)
             })
             .ToArray();
     }
 
     private static IEnumerable<AnalysisIssue> GroupEfMigrationIssues(
         IReadOnlyList<AnalysisIssue> issues,
-        ISet<string> groupedIssueIds)
+        ISet<string> groupedIssueIds,
+        string? repositoryRoot)
     {
         foreach (var ruleId in new[] { "EF004", "EF005" })
         {
@@ -79,7 +82,7 @@ public sealed class FindingGroupingService
                     LineNumber = issueGroup.Min(issue => issue.LineNumber),
                     Severity = issueGroup.Max(issue => issue.Severity),
                     Evidence = evidence,
-                    RootCauseKey = $"{ruleId}|{first.ProjectName}|{NormalizePath(first.FilePath ?? string.Empty)}",
+                    RootCauseKey = $"{ruleId}|{first.ProjectName}|{BuildRootCausePath(first.FilePath, repositoryRoot)}",
                     WhyDetected = BuildEvidenceText(first, evidence, "Migration file contains repeated EF Core migration operations that share one deployment risk.")
                 };
             }
@@ -194,7 +197,8 @@ public sealed class FindingGroupingService
 
     private static IEnumerable<AnalysisIssue> GroupConnectionStrings(
         IReadOnlyList<AnalysisIssue> issues,
-        ISet<string> groupedIssueIds)
+        ISet<string> groupedIssueIds,
+        string? repositoryRoot)
     {
         foreach (var group in issues
             .Where(issue => issue.RuleId == "SECCONN" && !string.IsNullOrWhiteSpace(issue.FilePath))
@@ -235,7 +239,7 @@ public sealed class FindingGroupingService
                 Severity = issueGroup.Max(issue => issue.Severity),
                 Confidence = issueGroup.Max(issue => issue.Confidence ?? IssueConfidence.Medium),
                 Evidence = evidence,
-                RootCauseKey = $"SECCONN|{first.ProjectName}|{NormalizePath(first.FilePath ?? string.Empty)}",
+                RootCauseKey = $"SECCONN|{first.ProjectName}|{BuildRootCausePath(first.FilePath, repositoryRoot)}",
                 WhyDetected = BuildEvidenceText(first, evidence, "DotDet grouped committed connection string keys found in the same configuration file.")
             };
         }
@@ -331,13 +335,57 @@ public sealed class FindingGroupingService
         return issue.Title;
     }
 
-    private static string BuildDefaultRootCauseKey(AnalysisIssue issue)
+    private static string BuildDefaultRootCauseKey(AnalysisIssue issue, string? repositoryRoot)
     {
         return string.Join('|',
             issue.RuleId ?? issue.Id,
             issue.ProjectName ?? "Solution",
-            NormalizePath(issue.FilePath ?? string.Empty),
+            BuildRootCausePath(issue.FilePath, repositoryRoot),
             issue.Title);
+    }
+
+    private static string SanitizeRootCauseKey(string rootCauseKey, string? repositoryRoot)
+    {
+        return string.Join('|', rootCauseKey
+            .Split('|')
+            .Select(segment => LooksLikePath(segment)
+                ? BuildRootCausePath(segment, repositoryRoot)
+                : segment));
+    }
+
+    private static string BuildRootCausePath(string? path, string? repositoryRoot)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return "<unknown-file>";
+        }
+
+        var normalizedPath = NormalizePath(path.Trim());
+        if (!Path.IsPathRooted(path))
+        {
+            return normalizedPath.Split('/').Any(segment => segment == "..")
+                ? "<unknown-file>"
+                : normalizedPath.TrimStart('.', '/');
+        }
+
+        if (string.IsNullOrWhiteSpace(repositoryRoot))
+        {
+            return "<unknown-file>";
+        }
+
+        var relativePath = Path.GetRelativePath(repositoryRoot, path);
+        return Path.IsPathRooted(relativePath)
+            || relativePath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Any(segment => segment == "..")
+                ? "<unknown-file>"
+                : NormalizePath(relativePath);
+    }
+
+    private static bool LooksLikePath(string value)
+    {
+        var trimmed = value.Trim();
+        return Path.IsPathRooted(trimmed)
+            || trimmed.Contains('/')
+            || trimmed.Contains('\\');
     }
 
     private static string NormalizePath(string path)

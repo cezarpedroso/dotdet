@@ -311,7 +311,17 @@ public sealed class AnalysisHistoryStore
             return [];
         }
 
-        return JsonSerializer.Deserialize<List<AnalysisHistoryRun>>(json, JsonOptions) ?? [];
+        return (JsonSerializer.Deserialize<List<AnalysisHistoryRun>>(json, JsonOptions) ?? [])
+            .Select(SanitizeLegacyRun)
+            .ToList();
+    }
+
+    private static AnalysisHistoryRun SanitizeLegacyRun(AnalysisHistoryRun run)
+    {
+        return run with
+        {
+            ReportSnapshot = AnalysisResultSanitizer.CreateHistorySnapshot(run.ReportSnapshot)
+        };
     }
 
     private async Task SaveUnsafeAsync(List<AnalysisHistoryRun> runs, CancellationToken cancellationToken)
