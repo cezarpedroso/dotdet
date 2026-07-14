@@ -1,4 +1,5 @@
 using System.Xml.Linq;
+using System.Text;
 using Forge.Api.Analysis;
 using Forge.Api.Analyzers;
 using Forge.Api.Models;
@@ -14,6 +15,10 @@ namespace Forge.Api.Services;
 
 public sealed partial class SolutionAnalysisService
 {
+    public const int SourcePreviewFileCountLimit = 250;
+    public const long SourcePreviewByteLimit = 5_000_000;
+    private const long SourcePreviewSingleFileByteLimit = 750_000;
+
     private readonly ArchitectureAnalyzer _architectureAnalyzer;
     private readonly DependencyInjectionAnalyzer _dependencyInjectionAnalyzer;
     private readonly EfCoreAnalyzer _efCoreAnalyzer;
@@ -91,7 +96,8 @@ public sealed partial class SolutionAnalysisService
         var categoryScores = _scoringService.CalculateCategoryScores(orderedIssues);
         var overallScore = _scoringService.CalculateOverallScore(categoryScores, orderedIssues);
         var architectureMap = _architectureMapService.Build(context, projectGraph, orderedIssues);
-        var sourceFiles = await BuildAnalysisSourceFilesAsync(context, orderedIssues, cancellationToken);
+        var sourcePreview = await BuildAnalysisSourceFilesAsync(context, orderedIssues, cancellationToken);
+        var sourceFiles = sourcePreview.Files;
 
         return new AnalysisResult
         {
@@ -106,6 +112,15 @@ public sealed partial class SolutionAnalysisService
             SourcePreviewUnavailableReason = sourceFiles.Count > 0
                 ? null
                 : "Source preview is unavailable for this analysis result.",
+            SourcePreviewCapped = sourcePreview.OmittedFileCount > 0,
+            SourcePreviewCappedReason = sourcePreview.OmittedFileCount > 0
+                ? $"Source preview was limited to {SourcePreviewFileCountLimit} files and {SourcePreviewByteLimit / 1_000_000} MB. {sourcePreview.OmittedFileCount} additional file(s) were omitted."
+                : null,
+            SourcePreviewIncludedFileCount = sourceFiles.Count,
+            SourcePreviewOmittedFileCount = sourcePreview.OmittedFileCount,
+            SourcePreviewIncludedBytes = sourcePreview.IncludedBytes,
+            SourcePreviewFileCountLimit = SourcePreviewFileCountLimit,
+            SourcePreviewByteLimit = SourcePreviewByteLimit,
             AnalysisFidelity = options.AllowMSBuildWorkspace
                 ? "Roslyn Semantic Analysis"
                 : "Safe Syntax Analysis",
@@ -616,43 +631,61 @@ public sealed partial class SolutionAnalysisService
         return sourceFiles;
     }
 
-    private static async Task<IReadOnlyList<AnalysisSourceFile>> BuildAnalysisSourceFilesAsync(
+    private static async Task<SourcePreviewBuildResult> BuildAnalysisSourceFilesAsync(
         SolutionAnalysisContext context,
         IReadOnlyList<AnalysisIssue> issues,
         CancellationToken cancellationToken)
     {
-        const long maxSourceFileBytes = 750_000;
-
         var rootDirectory = AnalyzerUtilities.NormalizePath(context.RootDirectory);
         var projectByPath = context.Projects
             .ToDictionary(project => AnalyzerUtilities.NormalizePath(project.FilePath), StringComparer.OrdinalIgnoreCase);
         var projectsByDirectory = context.Projects
             .OrderByDescending(project => project.DirectoryPath.Length)
             .ToArray();
-        var candidatePaths = context.SourceFiles
-            .Select(file => file.FilePath)
+        var candidatePaths = issues
+            .Select(issue => issue.FilePath)
+            .OfType<string>()
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Concat(context.SourceFiles.Select(file => file.FilePath))
             .Concat(context.AppSettingsFiles)
             .Concat(context.Projects.Select(project => project.FilePath))
             .Concat(DiscoverSourcePreviewFiles(rootDirectory))
-            .Concat(issues.Select(issue => issue.FilePath).OfType<string>().Where(path => !string.IsNullOrWhiteSpace(path)))
             .Select(AnalyzerUtilities.NormalizePath)
             .Where(path => IsSourceProjectionCandidate(path, rootDirectory))
             .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
             .ToArray();
         var sourceFiles = new List<AnalysisSourceFile>();
+        long includedBytes = 0;
+        var omittedFileCount = 0;
 
         foreach (var path in candidatePaths)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
             var fileInfo = new FileInfo(path);
-            if (!fileInfo.Exists || fileInfo.Length > maxSourceFileBytes)
+            if (!fileInfo.Exists || fileInfo.Length > SourcePreviewSingleFileByteLimit)
             {
+                if (fileInfo.Exists)
+                {
+                    omittedFileCount++;
+                }
+                continue;
+            }
+
+            if (sourceFiles.Count >= SourcePreviewFileCountLimit)
+            {
+                omittedFileCount++;
                 continue;
             }
 
             var content = await File.ReadAllTextAsync(path, cancellationToken);
+            var contentBytes = Encoding.UTF8.GetByteCount(content);
+            if (includedBytes + contentBytes > SourcePreviewByteLimit)
+            {
+                omittedFileCount++;
+                continue;
+            }
+
             var relativePath = Path.GetRelativePath(rootDirectory, path).Replace('\\', '/');
 
             sourceFiles.Add(new AnalysisSourceFile
@@ -663,10 +696,16 @@ public sealed partial class SolutionAnalysisService
                 Content = content,
                 Language = GetLanguage(path)
             });
+            includedBytes += contentBytes;
         }
 
-        return sourceFiles;
+        return new SourcePreviewBuildResult(sourceFiles, includedBytes, omittedFileCount);
     }
+
+    private sealed record SourcePreviewBuildResult(
+        IReadOnlyList<AnalysisSourceFile> Files,
+        long IncludedBytes,
+        int OmittedFileCount);
 
     private static IEnumerable<string> DiscoverSourcePreviewFiles(string rootDirectory)
     {

@@ -1,7 +1,9 @@
 using Forge.Api.Contracts;
 using Forge.Api.Models;
 using Forge.Api.Services;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using System.Security.Claims;
 
 namespace Forge.Api.Controllers;
@@ -31,6 +33,9 @@ public sealed class AnalysisController : ControllerBase
     }
 
     [HttpPost("analyze-path")]
+    [Authorize]
+    [EnableRateLimiting("analysis")]
+    [AnalysisExecution]
     [ProducesResponseType<AnalysisResult>(StatusCodes.Status200OK)]
     public async Task<ActionResult<AnalysisResult>> AnalyzePath(
         [FromBody] AnalyzePathRequest request,
@@ -58,7 +63,7 @@ public sealed class AnalysisController : ControllerBase
                 Path.GetFileName(request.SolutionPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)),
                 null,
                 cancellationToken);
-            return Ok(WithAnalysisRunId(result, analysisRunId));
+            return Ok(AnalysisResultSanitizer.CreateLiveResponse(WithAnalysisRunId(result, analysisRunId)));
         }
         catch (FileNotFoundException exception)
         {
@@ -71,6 +76,9 @@ public sealed class AnalysisController : ControllerBase
     }
 
     [HttpPost("analyze-sample")]
+    [AllowAnonymous]
+    [EnableRateLimiting("analysis")]
+    [AnalysisExecution]
     [ProducesResponseType<AnalysisResult>(StatusCodes.Status200OK)]
     public async Task<ActionResult<AnalysisResult>> AnalyzeSample(CancellationToken cancellationToken)
     {
@@ -87,7 +95,7 @@ public sealed class AnalysisController : ControllerBase
                 result.SolutionName,
                 null,
                 cancellationToken);
-            return Ok(WithAnalysisRunId(result, analysisRunId));
+            return Ok(AnalysisResultSanitizer.CreateLiveResponse(WithAnalysisRunId(result, analysisRunId)));
         }
         catch (FileNotFoundException exception)
         {
@@ -96,6 +104,9 @@ public sealed class AnalysisController : ControllerBase
     }
 
     [HttpPost("analyze-zip")]
+    [Authorize]
+    [EnableRateLimiting("analysis")]
+    [AnalysisExecution]
     [RequestSizeLimit(250_000_000)]
     [ProducesResponseType<AnalysisResult>(StatusCodes.Status200OK)]
     public async Task<ActionResult<AnalysisResult>> AnalyzeZip(
@@ -125,7 +136,7 @@ public sealed class AnalysisController : ControllerBase
                 request.File.FileName,
                 null,
                 cancellationToken);
-            return Ok(WithAnalysisRunId(result, analysisRunId));
+            return Ok(AnalysisResultSanitizer.CreateLiveResponse(WithAnalysisRunId(result, analysisRunId)));
         }
         catch (Exception exception) when (exception is ArgumentException or InvalidDataException or InvalidOperationException)
         {
@@ -177,6 +188,9 @@ public sealed class AnalysisController : ControllerBase
     }
 
     [HttpPost("history/{id}/rerun")]
+    [Authorize]
+    [EnableRateLimiting("analysis")]
+    [AnalysisExecution]
     [ProducesResponseType<AnalysisResult>(StatusCodes.Status200OK)]
     public async Task<ActionResult<AnalysisResult>> RerunHistoryItem(string id, CancellationToken cancellationToken)
     {
@@ -211,7 +225,7 @@ public sealed class AnalysisController : ControllerBase
                 result.SolutionName,
                 cancellationToken: cancellationToken);
 
-            return Ok(result);
+            return Ok(AnalysisResultSanitizer.CreateLiveResponse(result));
         }
         catch (FileNotFoundException exception)
         {

@@ -1,6 +1,10 @@
 ﻿using System.Security.Claims;
+using System.Net;
 using System.Text.Json;
+using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.RateLimiting;
 using System.Text.Json.Serialization;
 using Forge.Api.Analysis;
 using Forge.Api.Analyzers;
@@ -18,27 +22,65 @@ builder.Services
         options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
     });
 
+var hostingOptions = builder.Configuration.GetSection(DotDetHostingOptions.SectionName).Get<DotDetHostingOptions>() ?? new();
+var analysisOptions = builder.Configuration.GetSection(AnalysisExecutionOptions.SectionName).Get<AnalysisExecutionOptions>() ?? new();
+
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("DotDetDashboard", policy =>
     {
-        policy
-            .WithOrigins(
-                "http://localhost:5173",
-                "https://localhost:5173",
-                "http://127.0.0.1:5173",
-                "https://127.0.0.1:5173")
-            .AllowAnyHeader()
-            .AllowAnyMethod()
-            .AllowCredentials();
+        if (hostingOptions.AllowedOrigins.Length > 0)
+        {
+            policy.WithOrigins(hostingOptions.AllowedOrigins)
+                .AllowAnyHeader()
+                .AllowAnyMethod()
+                .AllowCredentials();
+        }
     });
 });
 
 builder.Services.Configure<GitHubAuthOptions>(builder.Configuration.GetSection(GitHubAuthOptions.SectionName));
+builder.Services.Configure<DotDetHostingOptions>(builder.Configuration.GetSection(DotDetHostingOptions.SectionName));
+builder.Services.Configure<AnalysisExecutionOptions>(builder.Configuration.GetSection(AnalysisExecutionOptions.SectionName));
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto | ForwardedHeaders.XForwardedHost;
+    options.ForwardLimit = 2;
+    foreach (var value in hostingOptions.KnownProxies)
+    {
+        if (IPAddress.TryParse(value, out var address))
+        {
+            options.KnownProxies.Add(address);
+        }
+    }
+});
+builder.Services.AddRateLimiter(options =>
+{
+    options.AddPolicy("analysis", context => RateLimitPartition.GetFixedWindowLimiter(
+        AnalysisExecutionMiddleware.GetCallerKey(context),
+        _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = Math.Max(1, analysisOptions.PermitLimit),
+            Window = TimeSpan.FromSeconds(Math.Max(1, analysisOptions.WindowSeconds)),
+            QueueLimit = 0,
+            AutoReplenishment = true
+        }));
+    options.OnRejected = async (context, cancellationToken) =>
+    {
+        context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+        await context.HttpContext.Response.WriteAsJsonAsync(new
+        {
+            title = "Analysis request limit reached",
+            status = StatusCodes.Status429TooManyRequests,
+            detail = "Too many analysis requests were submitted. Wait briefly and try again."
+        }, cancellationToken);
+    };
+});
 builder.Services.AddDataProtection();
 builder.Services.AddProblemDetails();
 builder.Services.AddHealthChecks();
 builder.Services.AddOpenApi();
+builder.Services.AddAuthorization();
 
 builder.Services.AddScoped<SolutionAnalysisService>();
 builder.Services.AddSingleton<SemanticAnalysisHelper>();
@@ -58,6 +100,7 @@ builder.Services.AddScoped<SecurityConfigurationAnalyzer>();
 builder.Services.AddScoped<ApiReadinessAnalyzer>();
 builder.Services.AddSingleton<ScoringService>();
 builder.Services.AddSingleton<ZipExtractionService>();
+builder.Services.AddSingleton<AnalysisConcurrencyGate>();
 builder.Services.AddHttpClient<GitHubRepositoryService>();
 
 var githubAuthOptions = builder.Configuration.GetSection(GitHubAuthOptions.SectionName).Get<GitHubAuthOptions>() ?? new GitHubAuthOptions();
@@ -73,7 +116,11 @@ builder.Services
         options.Cookie.Name = ".DotDet.Auth";
         options.Cookie.HttpOnly = true;
         options.Cookie.SameSite = SameSiteMode.Lax;
-        options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+        options.Cookie.SecurePolicy = builder.Environment.IsDevelopment()
+            ? CookieSecurePolicy.SameAsRequest
+            : CookieSecurePolicy.Always;
+        options.Cookie.IsEssential = true;
+        options.ExpireTimeSpan = TimeSpan.FromHours(8);
         options.SlidingExpiration = true;
     })
     .AddOAuth("GitHub", options =>
@@ -87,6 +134,11 @@ builder.Services
         options.Scope.Add("read:user");
         options.Scope.Add("user:email");
         options.SaveTokens = false;
+        options.CorrelationCookie.HttpOnly = true;
+        options.CorrelationCookie.SameSite = SameSiteMode.None;
+        options.CorrelationCookie.SecurePolicy = builder.Environment.IsDevelopment()
+            ? CookieSecurePolicy.SameAsRequest
+            : CookieSecurePolicy.Always;
 
         options.Events.OnRedirectToAuthorizationEndpoint = context =>
         {
@@ -168,6 +220,8 @@ builder.Services
 
 var app = builder.Build();
 
+app.UseForwardedHeaders();
+
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
@@ -178,9 +232,12 @@ else
 }
 
 app.UseHttpsRedirection();
+app.UseRouting();
 app.UseCors("DotDetDashboard");
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseRateLimiter();
+app.UseMiddleware<AnalysisExecutionMiddleware>();
 
 app.MapHealthChecks("/health");
 app.MapControllers();

@@ -26,6 +26,20 @@ public sealed record AnalysisResult
 
     public string? SourcePreviewUnavailableReason { get; init; }
 
+    public bool SourcePreviewCapped { get; init; }
+
+    public string? SourcePreviewCappedReason { get; init; }
+
+    public int SourcePreviewIncludedFileCount { get; init; }
+
+    public int SourcePreviewOmittedFileCount { get; init; }
+
+    public long SourcePreviewIncludedBytes { get; init; }
+
+    public int SourcePreviewFileCountLimit { get; init; }
+
+    public long SourcePreviewByteLimit { get; init; }
+
     public string AnalysisFidelity { get; init; } = "Roslyn Semantic Analysis";
 
     public bool SemanticAnalysisSkipped { get; init; }

@@ -10,7 +10,7 @@ public sealed class GitHubAuthOptions
 
     public string CallbackPath { get; set; } = "/signin-github";
 
-    public string FrontendBaseUrl { get; set; } = "http://127.0.0.1:5173";
+    public string FrontendBaseUrl { get; set; } = string.Empty;
 
     public string UserStorePath { get; set; } = string.Empty;
 

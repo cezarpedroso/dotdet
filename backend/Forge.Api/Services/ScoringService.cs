@@ -20,7 +20,7 @@ public sealed class ScoringService
             + (categoryScores.DependencyInjection * 0.20)
             + (categoryScores.Architecture * 0.15);
 
-        return ApplyCriticalCap((int)Math.Round(weightedScore, MidpointRounding.AwayFromZero), issues);
+        return ApplyReleaseImpactCaps((int)Math.Round(weightedScore, MidpointRounding.AwayFromZero), issues);
     }
 
     public CategoryScores CalculateCategoryScores(IEnumerable<AnalysisIssue> issues)
@@ -70,17 +70,23 @@ public sealed class ScoringService
         return Math.Max(0, 100 - penalty);
     }
 
-    private static int ApplyCriticalCap(int score, IEnumerable<AnalysisIssue> issues)
+    private static int ApplyReleaseImpactCaps(int score, IEnumerable<AnalysisIssue> issues)
     {
-        var activeCriticalCount = issues
+        var activeIssues = issues.Where(AnalyzerUtilities.IsActiveProductionFinding).ToArray();
+        var activeCriticalCount = activeIssues
             .Where(issue =>
-                issue.Severity == IssueSeverity.Critical
-                && AnalyzerUtilities.IsActiveProductionFinding(issue))
+                issue.Severity == IssueSeverity.Critical)
             .Select(GetRootCauseKey)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Count();
 
-        var cap = activeCriticalCount switch
+        var confirmedErrorCount = activeIssues
+            .Where(issue => issue.Severity == IssueSeverity.Error && issue.Confidence == IssueConfidence.High)
+            .Select(GetRootCauseKey)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
+
+        var criticalCap = activeCriticalCount switch
         {
             0 => 100,
             <= 3 => 82,
@@ -88,7 +94,15 @@ public sealed class ScoringService
             _ => 49
         };
 
-        return Math.Min(score, cap);
+        var confirmedErrorCap = confirmedErrorCount switch
+        {
+            0 => 100,
+            <= 2 => 88,
+            <= 5 => 85,
+            _ => 82
+        };
+
+        return Math.Min(score, Math.Min(criticalCap, confirmedErrorCap));
     }
 
     private static int GetPenalty(AnalysisIssue issue)

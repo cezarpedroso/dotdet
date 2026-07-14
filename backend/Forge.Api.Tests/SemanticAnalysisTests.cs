@@ -8,10 +8,13 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using System.Net;
 using System.Security.Claims;
 using Xunit;
@@ -123,6 +126,61 @@ public sealed class SemanticAnalysisTests
         Assert.Equal(82, service.CalculateOverallScore(new CategoryScores { Architecture = 95, Security = 95, EfCore = 95, DependencyInjection = 95, ApiReadiness = 95 }, twoCriticals));
         Assert.Equal(68, service.CalculateOverallScore(new CategoryScores { Architecture = 95, Security = 95, EfCore = 95, DependencyInjection = 95, ApiReadiness = 95 }, sixCriticals));
         Assert.Equal(49, service.CalculateOverallScore(new CategoryScores { Architecture = 95, Security = 95, EfCore = 95, DependencyInjection = 95, ApiReadiness = 95 }, nineCriticals));
+    }
+
+    [Fact]
+    public void ScoringService_CapsConfirmedErrorsWithoutTreatingInferredErrorsAsBlockers()
+    {
+        var service = new ScoringService();
+        var healthyScores = new CategoryScores
+        {
+            Architecture = 95,
+            Security = 95,
+            EfCore = 95,
+            DependencyInjection = 95,
+            ApiReadiness = 95
+        };
+        var confirmedError = CreateIssue("SEC-CONFIRMED", IssueSeverity.Error) with
+        {
+            Confidence = IssueConfidence.High,
+            RootCauseKey = "SEC-CONFIRMED"
+        };
+        var inferredError = CreateIssue("SEC-INFERRED", IssueSeverity.Error) with
+        {
+            Confidence = IssueConfidence.Medium,
+            RootCauseKey = "SEC-INFERRED"
+        };
+
+        Assert.Equal(88, service.CalculateOverallScore(healthyScores, [confirmedError]));
+        Assert.Equal(95, service.CalculateOverallScore(healthyScores, [inferredError]));
+    }
+
+    [Fact]
+    public void AnalysisEndpoints_ApplyAuthenticationRateAndConcurrencyPolicies()
+    {
+        var zipMethod = typeof(AnalysisController).GetMethod(nameof(AnalysisController.AnalyzeZip))!;
+        var sampleMethod = typeof(AnalysisController).GetMethod(nameof(AnalysisController.AnalyzeSample))!;
+
+        Assert.NotNull(zipMethod.GetCustomAttributes(typeof(AuthorizeAttribute), inherit: true).SingleOrDefault());
+        Assert.NotNull(zipMethod.GetCustomAttributes(typeof(EnableRateLimitingAttribute), inherit: true).SingleOrDefault());
+        Assert.NotNull(zipMethod.GetCustomAttributes(typeof(AnalysisExecutionAttribute), inherit: true).SingleOrDefault());
+        Assert.NotNull(sampleMethod.GetCustomAttributes(typeof(AllowAnonymousAttribute), inherit: true).SingleOrDefault());
+        Assert.NotNull(typeof(GitHubController).GetCustomAttributes(typeof(AuthorizeAttribute), inherit: true).SingleOrDefault());
+    }
+
+    [Fact]
+    public void AnalysisConcurrencyGate_LimitsEachCallerIndependently()
+    {
+        var gate = new AnalysisConcurrencyGate(Options.Create(new AnalysisExecutionOptions
+        {
+            MaxConcurrentPerCaller = 1
+        }));
+
+        using var first = gate.TryAcquire("user:one");
+        Assert.NotNull(first);
+        Assert.Null(gate.TryAcquire("user:one"));
+        using var otherUser = gate.TryAcquire("user:two");
+        Assert.NotNull(otherUser);
     }
 
     [Fact]
@@ -521,6 +579,37 @@ public sealed class SemanticAnalysisTests
             CancellationToken.None);
 
         Assert.IsType<NotFoundResult>(response.Result);
+    }
+
+    [Fact]
+    public async Task AnalysisController_AnalyzeSample_ReturnsOnlyRepositoryRelativePaths()
+    {
+        var controller = new AnalysisController(
+            CreateService(),
+            new ZipExtractionService(),
+            new AnalysisHistoryStore(Path.Combine(Path.GetTempPath(), $"dotdet-history-{Guid.NewGuid():N}.json")),
+            new TestWebHostEnvironment { EnvironmentName = Environments.Development },
+            NullLogger<AnalysisController>.Instance)
+        {
+            ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }
+        };
+
+        var response = await controller.AnalyzeSample(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<AnalysisResult>(ok.Value);
+
+        Assert.Null(result.SolutionPath);
+        Assert.Null(result.RepositoryRoot);
+        Assert.Null(result.SuppressionFilePath);
+        Assert.All(result.SourceFiles, file =>
+        {
+            Assert.False(Path.IsPathRooted(file.FilePath));
+            Assert.False(Path.IsPathRooted(file.RelativePath));
+        });
+        Assert.All(result.Issues.Where(issue => !string.IsNullOrWhiteSpace(issue.FilePath)), issue =>
+            Assert.False(Path.IsPathRooted(issue.FilePath!)));
+        Assert.All(result.ProjectGraph.Projects, project => Assert.False(Path.IsPathRooted(project.FilePath)));
+        Assert.All(result.ArchitectureMap?.Projects ?? [], project => Assert.False(Path.IsPathRooted(project.FilePath)));
     }
 
     [Fact]
@@ -961,9 +1050,24 @@ public sealed class SemanticAnalysisTests
     public void AnalysisResultSanitizer_LiveRepositoryResponseKeepsSourcePreviewWithoutTempPaths()
     {
         var repositoryRoot = Path.Combine(Path.GetTempPath(), $"dotdet-live-repo-{Guid.NewGuid():N}");
-        var result = CreateHistoryAnalysisResult(repositoryRoot);
+        var original = CreateHistoryAnalysisResult(repositoryRoot);
+        var configuredIssue = Assert.Single(original.Issues) with
+        {
+            WhyDetected = $"DotDet inspected {Path.Combine(repositoryRoot, "src", "Api", "Program.cs")}",
+            Evidence =
+            [
+                new AnalysisEvidence
+                {
+                    Label = "File",
+                    Detail = $"Configuration was detected in {Path.Combine(repositoryRoot, "src", "Api", "Program.cs")}",
+                    FilePath = Path.Combine(repositoryRoot, "src", "Api", "Program.cs"),
+                    LineNumber = 12
+                }
+            ]
+        };
+        var result = original with { Issues = [configuredIssue] };
 
-        var liveResult = AnalysisResultSanitizer.CreateLiveRepositoryResponse(result);
+        var liveResult = AnalysisResultSanitizer.CreateLiveResponse(result);
 
         Assert.False(liveResult.IsHistoricalSnapshot);
         Assert.True(liveResult.SourcePreviewAvailable);
@@ -980,12 +1084,80 @@ public sealed class SemanticAnalysisTests
         var issue = Assert.Single(liveResult.Issues);
         Assert.Equal("src/Api/Program.cs", issue.FilePath);
         Assert.Equal("src/Api/Program.cs", Assert.Single(issue.Evidence!).FilePath);
+        Assert.DoesNotContain(repositoryRoot, issue.WhyDetected!, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(repositoryRoot, Assert.Single(issue.Evidence!).Detail, StringComparison.OrdinalIgnoreCase);
         Assert.Equal("src/Api/Api.csproj", Assert.Single(liveResult.ProjectGraph.Projects).FilePath);
         Assert.Equal("src/Api/Api.csproj", Assert.Single(liveResult.ArchitectureMap!.Projects).FilePath);
 
         var serialized = System.Text.Json.JsonSerializer.Serialize(liveResult);
         Assert.DoesNotContain(repositoryRoot.Replace('\\', '/'), serialized, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(repositoryRoot, serialized, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_SourcePreviewHonorsAggregateFileCountCap()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"dotdet-preview-count-{Guid.NewGuid():N}");
+
+        try
+        {
+            var solutionPath = CreateSourcePreviewLimitFixture(tempRoot);
+            for (var index = 0; index < SolutionAnalysisService.SourcePreviewFileCountLimit + 20; index++)
+            {
+                WriteFile(Path.Combine(tempRoot, "preview", index.ToString("D3"), "README.md"), $"Preview file {index}");
+            }
+
+            var result = await CreateService().AnalyzeAsync(
+                solutionPath,
+                AnalysisInputTrust.UntrustedArchive,
+                CancellationToken.None);
+
+            Assert.True(result.SourcePreviewCapped);
+            Assert.Equal(SolutionAnalysisService.SourcePreviewFileCountLimit, result.SourceFiles.Count);
+            Assert.Equal(result.SourceFiles.Count, result.SourcePreviewIncludedFileCount);
+            Assert.True(result.SourcePreviewOmittedFileCount > 0);
+            Assert.Contains("omitted", result.SourcePreviewCappedReason, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_SourcePreviewHonorsAggregateByteCap()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"dotdet-preview-bytes-{Guid.NewGuid():N}");
+
+        try
+        {
+            var solutionPath = CreateSourcePreviewLimitFixture(tempRoot);
+            var largePreview = new string('x', 650_000);
+            for (var index = 0; index < 10; index++)
+            {
+                WriteFile(Path.Combine(tempRoot, "preview", index.ToString("D2"), "README.md"), largePreview);
+            }
+
+            var result = await CreateService().AnalyzeAsync(
+                solutionPath,
+                AnalysisInputTrust.UntrustedArchive,
+                CancellationToken.None);
+
+            Assert.True(result.SourcePreviewCapped);
+            Assert.True(result.SourcePreviewIncludedBytes <= SolutionAnalysisService.SourcePreviewByteLimit);
+            Assert.Equal(SolutionAnalysisService.SourcePreviewByteLimit, result.SourcePreviewByteLimit);
+            Assert.True(result.SourcePreviewOmittedFileCount > 0);
+        }
+        finally
+        {
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, recursive: true);
+            }
+        }
     }
 
     [Fact]
@@ -2697,6 +2869,26 @@ public sealed class SemanticAnalysisTests
             "samples",
             "Forge.SampleShop",
             "Forge.SampleShop.slnx"));
+    }
+
+    private static string CreateSourcePreviewLimitFixture(string root)
+    {
+        var projectPath = Path.Combine(root, "src", "Preview.Api", "Preview.Api.csproj");
+        var solutionPath = Path.Combine(root, "Preview.slnx");
+        WriteFile(projectPath, """
+            <Project Sdk="Microsoft.NET.Sdk.Web">
+              <PropertyGroup>
+                <TargetFramework>net9.0</TargetFramework>
+              </PropertyGroup>
+            </Project>
+            """);
+        WriteFile(Path.Combine(root, "src", "Preview.Api", "Program.cs"), "var builder = WebApplication.CreateBuilder(args);");
+        WriteFile(solutionPath, """
+            <Solution>
+              <Project Path="src/Preview.Api/Preview.Api.csproj" />
+            </Solution>
+            """);
+        return solutionPath;
     }
 
     private static void WriteFile(string path, string content)

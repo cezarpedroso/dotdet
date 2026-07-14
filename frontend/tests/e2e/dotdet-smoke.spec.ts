@@ -83,15 +83,43 @@ test.describe('DotDet critical smoke flows', () => {
     expect(markdownReport).toContain('## Open Findings By Category')
     expect(markdownReport).toContain('## Suppressed / Accepted Risks')
 
+    await expect.poll(() => page.evaluate(() => localStorage.getItem('det.analysis.lastResult.v1'))).not.toBeNull()
+    const persistedAnalysis = await page.evaluate(() => JSON.parse(localStorage.getItem('det.analysis.lastResult.v1') ?? '{}')) as {
+      solutionPath?: string
+      repositoryRoot?: string
+      sourceFiles?: unknown[]
+    }
+    expect(persistedAnalysis.solutionPath).toBeUndefined()
+    expect(persistedAnalysis.repositoryRoot).toBeUndefined()
+    expect(persistedAnalysis.sourceFiles).toBeUndefined()
+
+    await page.evaluate(() => {
+      localStorage.setItem('det.analysis.lastSolutionPath', 'C:\\server\\private\\Sample.slnx')
+      localStorage.setItem('det.findingDispositions.v1', JSON.stringify({
+        'unrelated-private-file:C:\\secret\\Private.cs': 'Accepted Risk',
+      }))
+    })
+    await page.reload()
+    expect(await page.evaluate(() => localStorage.getItem('det.analysis.lastSolutionPath'))).toBeNull()
+
     const jsonDownloadPromise = page.waitForEvent('download')
     await page.getByRole('button', { name: 'Export Report' }).click()
     await page.getByRole('menuitem', { name: 'JSON data' }).click()
     const jsonDownload = await jsonDownloadPromise
     const jsonPath = await jsonDownload.path()
     expect(jsonPath).toBeTruthy()
-    const jsonReport = JSON.parse(await fs.readFile(jsonPath!, 'utf8')) as { solutionName?: string; issues?: unknown[] }
+    const jsonReport = JSON.parse(await fs.readFile(jsonPath!, 'utf8')) as {
+      findingDispositions?: Record<string, string>
+      issues?: unknown[]
+      solutionName?: string
+      solutionPath?: string
+      sourceFiles?: unknown[]
+    }
     expect(jsonReport.solutionName).toBeTruthy()
     expect(Array.isArray(jsonReport.issues)).toBe(true)
+    expect(jsonReport.solutionPath).toBeUndefined()
+    expect(jsonReport.sourceFiles).toBeUndefined()
+    expect(jsonReport.findingDispositions).not.toHaveProperty('unrelated-private-file:C:\\secret\\Private.cs')
 
     await page.setViewportSize({ width: 390, height: 844 })
     const mobileOverflow = await page.evaluate(() => document.body.scrollWidth > window.innerWidth + 2)

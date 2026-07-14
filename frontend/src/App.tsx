@@ -238,6 +238,13 @@ type AnalysisResult = {
   isHistoricalSnapshot?: boolean
   sourcePreviewAvailable?: boolean
   sourcePreviewUnavailableReason?: string
+  sourcePreviewCapped?: boolean
+  sourcePreviewCappedReason?: string
+  sourcePreviewIncludedFileCount?: number
+  sourcePreviewOmittedFileCount?: number
+  sourcePreviewIncludedBytes?: number
+  sourcePreviewFileCountLimit?: number
+  sourcePreviewByteLimit?: number
   analysisFidelity?: string
   semanticAnalysisSkipped?: boolean
   semanticAnalysisSkippedReason?: string
@@ -275,7 +282,6 @@ type StoredWorkbenchState = {
   activePage: AppPage
   activeProject: ProjectFilter
   activeSeverity: SeverityFilter
-  analysisSolutionPath: string | null
   query: string
   result: AnalysisResult | null
   selectedFileId: string | null
@@ -370,7 +376,7 @@ const formattedLocalApiHost = localApiHost === '::1' ? '[::1]' : localApiHost
 const API_BASE_URL =
   import.meta.env.VITE_DOTDET_API_URL
   ?? import.meta.env.VITE_FORGE_API_URL
-  ?? `http://${formattedLocalApiHost}:5241`
+  ?? (import.meta.env.DEV ? `http://${formattedLocalApiHost}:5241` : window.location.origin)
 const DOTDET_REPOSITORY_URL = 'https://github.com/cezarpedroso/dotdet'
 const DOTDET_ISSUES_URL = 'https://github.com/cezarpedroso/DotDet/issues'
 const SCHEMA_ARCHITECT_URL = 'https://schemarchitect.azurewebsites.net/'
@@ -462,7 +468,6 @@ function App() {
   const [solutionPath] = useState('')
   const [zipFile, setZipFile] = useState<File | null>(null)
   const [result, setResult] = useState<AnalysisResult | null>(storedWorkbenchState.result)
-  const [analysisSolutionPath, setAnalysisSolutionPath] = useState<string | null>(storedWorkbenchState.analysisSolutionPath)
   const [ruleCatalog, setRuleCatalog] = useState<RuleDocumentation[]>([])
   const [ruleCatalogError, setRuleCatalogError] = useState<string | null>(null)
   const [startPage, setStartPage] = useState<StartPage>(() => getStartPageFromPath(Boolean(storedWorkbenchState.result)))
@@ -723,14 +728,6 @@ function App() {
   }, [result])
 
   useEffect(() => {
-    if (analysisSolutionPath) {
-      localStorage.setItem(lastAnalysisSolutionPathStorageKey, analysisSolutionPath)
-    } else {
-      localStorage.removeItem(lastAnalysisSolutionPathStorageKey)
-    }
-  }, [analysisSolutionPath])
-
-  useEffect(() => {
     localStorage.setItem(activePageStorageKey, activePage)
   }, [activePage])
 
@@ -866,7 +863,6 @@ function App() {
 
       const analysis = (await response.json()) as AnalysisResult
       setResult(analysis)
-      setAnalysisSolutionPath(null)
       setStartPage('Analyze')
       setActivePage('Code Explorer')
       if (authUser) {
@@ -920,7 +916,6 @@ function App() {
 
       const analysis = (await response.json()) as AnalysisResult
       setResult(analysis)
-      setAnalysisSolutionPath(analysis.solutionPath ?? (requestMode === 'path' ? requestPath.trim() : null))
       setStartPage('Analyze')
       setActivePage('Code Explorer')
       if (authUser) {
@@ -987,7 +982,6 @@ function App() {
 
       const detail = (await response.json()) as AnalysisHistoryDetail
       setResult(detail.result)
-      setAnalysisSolutionPath(null)
       setSelectedIssueId(detail.result.issues[0]?.id ?? null)
       setSelectedRuleId(getHighestRiskActiveRuleId(ruleCatalog, detail.result.issues) ?? null)
       setSelectedFileId(getFileId(detail.result.issues[0]?.filePath) || buildCodeFiles(detail.result)[0]?.id || null)
@@ -1015,7 +1009,6 @@ function App() {
 
       const analysis = (await response.json()) as AnalysisResult
       setResult(analysis)
-      setAnalysisSolutionPath(null)
       setActivePage('Code Explorer')
       setStartPage('Reports')
       await refreshHistory()
@@ -4349,7 +4342,7 @@ function CodeSolutionExplorer({
   }
 
   return (
-    <aside className="min-h-0 overflow-hidden bg-white text-sm">
+    <aside className="flex min-h-0 flex-col overflow-hidden bg-white text-sm">
       <div className="border-b border-slate-200 px-2 py-1.5">
         <div className="flex items-center justify-between gap-2">
           <span className="flex min-w-0 items-center gap-2">
@@ -4367,9 +4360,14 @@ function CodeSolutionExplorer({
           </label>
         </div>
         <p className="mt-0.5 truncate text-xs text-slate-500">{result.solutionName}</p>
+        {result.sourcePreviewCapped && result.sourcePreviewCappedReason ? (
+          <p className="mt-1 text-[11px] leading-4 text-amber-700" title={result.sourcePreviewCappedReason}>
+            Preview limited: {result.sourcePreviewOmittedFileCount ?? 0} file(s) omitted.
+          </p>
+        ) : null}
       </div>
 
-      <div className="h-[calc(100%-43px)] overflow-auto p-1.5">
+      <div className="min-h-0 flex-1 overflow-auto p-1.5">
         {visibleProjects.map((project) => {
           const projectFiles = (filesByProject.get(project.name) ?? [])
             .filter((file) => showAllFiles || (issuesByFile.get(file.id)?.length ?? 0) > 0)
@@ -5622,12 +5620,13 @@ function getStoredPanelWidth(key: string, fallback: number) {
 }
 
 function loadStoredWorkbenchState(): StoredWorkbenchState {
+  localStorage.removeItem(lastAnalysisSolutionPathStorageKey)
+
   return {
     activeCategory: getStoredString(activeCategoryStorageKey, 'All', ['All', ...categoryDefinitions.map((category) => category.key)] as const),
     activePage: getStoredString(activePageStorageKey, 'Code Explorer', ['Overview', 'Findings', 'Code Explorer', 'Architecture', 'Rule Explorer', 'Settings', 'Docs', 'Contact'] as const),
     activeProject: localStorage.getItem(activeProjectStorageKey) || 'All',
     activeSeverity: getStoredString(activeSeverityStorageKey, 'All', ['All', 'Info', 'Warning', 'Error', 'Critical'] as const),
-    analysisSolutionPath: localStorage.getItem(lastAnalysisSolutionPathStorageKey),
     query: localStorage.getItem(findingQueryStorageKey) ?? '',
     result: loadStoredAnalysisResult(),
     selectedFileId: localStorage.getItem(selectedFileStorageKey),
@@ -5765,9 +5764,17 @@ function stripSourceBearingAnalysisFields(result: AnalysisResult, unavailableRea
     ...safeResult,
     sourcePreviewAvailable: false,
     sourcePreviewUnavailableReason: unavailableReason,
+    sourcePreviewCapped: false,
+    sourcePreviewCappedReason: undefined,
+    sourcePreviewIncludedFileCount: 0,
+    sourcePreviewOmittedFileCount: 0,
+    sourcePreviewIncludedBytes: 0,
     issues: result.issues.map(sanitizeIssuePaths),
     projectGraph: sanitizeProjectGraphPaths(result.projectGraph),
     architectureMap: result.architectureMap ? sanitizeArchitectureMapPaths(result.architectureMap) : undefined,
+    engineeringAssessment: result.engineeringAssessment
+      ? sanitizeEngineeringAssessmentPaths(result.engineeringAssessment)
+      : undefined,
   }
 }
 
@@ -5775,8 +5782,17 @@ function sanitizeIssuePaths(issue: AnalysisIssue): AnalysisIssue {
   return {
     ...issue,
     filePath: sanitizePathForBrowserPersistence(issue.filePath),
+    description: sanitizeTextForBrowserPersistence(issue.description) ?? issue.description,
+    recommendation: sanitizeTextForBrowserPersistence(issue.recommendation) ?? issue.recommendation,
+    problemSummary: sanitizeTextForBrowserPersistence(issue.problemSummary),
+    whyDetected: sanitizeTextForBrowserPersistence(issue.whyDetected),
+    whyItMatters: sanitizeTextForBrowserPersistence(issue.whyItMatters),
+    recommendedPattern: sanitizeTextForBrowserPersistence(issue.recommendedPattern),
+    suggestedImplementation: sanitizeTextForBrowserPersistence(issue.suggestedImplementation),
     evidence: issue.evidence?.map((item) => ({
       ...item,
+      label: sanitizeTextForBrowserPersistence(item.label) ?? item.label,
+      detail: sanitizeTextForBrowserPersistence(item.detail) ?? item.detail,
       filePath: sanitizePathForBrowserPersistence(item.filePath),
     })),
   }
@@ -5799,6 +5815,30 @@ function sanitizeArchitectureMapPaths(architectureMap: ArchitectureMap): Archite
       ...project,
       filePath: sanitizePathForBrowserPersistence(project.filePath) ?? project.filePath,
     })),
+    dependencies: architectureMap.dependencies.map((dependency) => ({
+      ...dependency,
+      reason: sanitizeTextForBrowserPersistence(dependency.reason),
+    })),
+    violations: architectureMap.violations.map((violation) => ({
+      ...violation,
+      description: sanitizeTextForBrowserPersistence(violation.description) ?? violation.description,
+    })),
+  }
+}
+
+function sanitizeEngineeringAssessmentPaths(assessment: EngineeringAssessmentSummary): EngineeringAssessmentSummary {
+  const sanitizeList = (items: string[]) => items.map((item) => sanitizeTextForBrowserPersistence(item) ?? item)
+  return {
+    ...assessment,
+    overallProductionReadiness: sanitizeTextForBrowserPersistence(assessment.overallProductionReadiness) ?? assessment.overallProductionReadiness,
+    scoreExplanation: sanitizeTextForBrowserPersistence(assessment.scoreExplanation) ?? assessment.scoreExplanation,
+    strongAreas: sanitizeList(assessment.strongAreas),
+    highestRisks: sanitizeList(assessment.highestRisks),
+    architecturalObservations: sanitizeList(assessment.architecturalObservations),
+    securityObservations: sanitizeList(assessment.securityObservations),
+    apiReadinessObservations: sanitizeList(assessment.apiReadinessObservations),
+    maintainabilityObservations: sanitizeList(assessment.maintainabilityObservations),
+    recommendedPriorities: sanitizeList(assessment.recommendedPriorities),
   }
 }
 
@@ -5813,6 +5853,17 @@ function sanitizePathForBrowserPersistence(path?: string) {
   }
 
   return normalized
+}
+
+function sanitizeTextForBrowserPersistence(value?: string) {
+  if (!value) {
+    return value
+  }
+
+  const safeTail = (path: string) => path.replace(/\\/g, '/').split('/').filter(Boolean).at(-1) ?? 'file'
+  return value
+    .replace(/(?:[A-Za-z]:[\\/])[^\s"'<>|]+/g, (path) => safeTail(path))
+    .replace(/\/(?:tmp|var|home|Users|private|mnt)\/[^\s"'<>|]+/gi, (path) => safeTail(path))
 }
 
 function safeSetLocalStorage(key: string, value: string) {
@@ -6194,22 +6245,23 @@ function exportReport(
   }
 
   const sanitizedResult = sanitizeAnalysisResultForExport(result)
+  const relevantDispositions = getRelevantFindingDispositions(result, options.dispositions)
   const canIncludeSourcePreview = options.includeSourcePreview && !isLiveRepositoryAnalysisResult(result)
   const sourcePreview = canIncludeSourcePreview
     ? options.codeFiles.map((file) => ({
         content: file.content,
         name: file.name,
-        path: file.path,
+        path: sanitizePathForBrowserPersistence(file.path),
         projectName: file.projectName,
       }))
     : undefined
   const extension = options.format === 'Markdown' ? 'md' : options.format === 'HTML' ? 'html' : 'json'
   const content =
     options.format === 'Markdown'
-      ? createMarkdownReport(result, options.dispositions)
+      ? createMarkdownReport(sanitizedResult, relevantDispositions)
       : options.format === 'HTML'
-        ? createHtmlReport(result, options.dispositions)
-        : JSON.stringify(sourcePreview ? { ...sanitizedResult, findingDispositions: options.dispositions, sourcePreview } : { ...sanitizedResult, findingDispositions: options.dispositions }, null, 2)
+        ? createHtmlReport(sanitizedResult, relevantDispositions)
+        : JSON.stringify(sourcePreview ? { ...sanitizedResult, findingDispositions: relevantDispositions, sourcePreview } : { ...sanitizedResult, findingDispositions: relevantDispositions }, null, 2)
   const blob = new Blob([content], { type: options.format === 'Markdown' ? 'text/markdown' : options.format === 'HTML' ? 'text/html' : 'application/json' })
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
@@ -6217,6 +6269,18 @@ function exportReport(
   anchor.download = `${getReportFileName(result.solutionName)}.${extension}`
   anchor.click()
   URL.revokeObjectURL(url)
+}
+
+function getRelevantFindingDispositions(
+  result: AnalysisResult,
+  dispositions: Record<string, FindingDisposition>,
+) {
+  return Object.fromEntries(
+    result.issues
+      .map((issue) => getFindingDispositionKey(result.solutionName, issue))
+      .filter((key) => dispositions[key] && dispositions[key] !== 'Open')
+      .map((key) => [key, dispositions[key]]),
+  ) as Record<string, FindingDisposition>
 }
 
 function isLiveRepositoryAnalysisResult(result: AnalysisResult) {

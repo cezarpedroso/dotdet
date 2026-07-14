@@ -1,11 +1,14 @@
 using System.Security.Claims;
 using Forge.Api.Models;
 using Forge.Api.Services;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace Forge.Api.Controllers;
 
 [ApiController]
+[Authorize]
 [Route("api/[controller]")]
 public sealed class GitHubController : ControllerBase
 {
@@ -94,6 +97,8 @@ public sealed class GitHubController : ControllerBase
     }
 
     [HttpPost("analyze-repo")]
+    [EnableRateLimiting("analysis")]
+    [AnalysisExecution]
     [ProducesResponseType<AnalysisResult>(StatusCodes.Status200OK)]
     public Task<ActionResult<AnalysisResult>> AnalyzeRepository(
         [FromBody] AnalyzePublicRepositoryRequest request,
@@ -103,6 +108,8 @@ public sealed class GitHubController : ControllerBase
     }
 
     [HttpPost("analyze-public-repo")]
+    [EnableRateLimiting("analysis")]
+    [AnalysisExecution]
     [ProducesResponseType<AnalysisResult>(StatusCodes.Status200OK)]
     public async Task<ActionResult<AnalysisResult>> AnalyzePublicRepository(
         [FromBody] AnalyzePublicRepositoryRequest request,
@@ -173,7 +180,7 @@ public sealed class GitHubController : ControllerBase
                 cancellationToken);
             result = result with { AnalysisRunId = run.Id };
 
-            return Ok(AnalysisResultSanitizer.CreateLiveRepositoryResponse(result));
+            return Ok(AnalysisResultSanitizer.CreateLiveResponse(result));
         }
         catch (GitHubRepositoryException exception)
         {

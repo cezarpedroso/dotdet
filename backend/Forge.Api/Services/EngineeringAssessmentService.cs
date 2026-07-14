@@ -54,6 +54,11 @@ public sealed class EngineeringAssessmentService
             .ToArray();
 
         var scoreContext = $"DotDet calculated the {overallScore}/100 readiness score from weighted category scores (Security {scores.Security}, API {scores.ApiReadiness}, EF Core {scores.EfCore}, Dependency Injection {scores.DependencyInjection}, Architecture {scores.Architecture}), finding severity, confidence, suppression state, and release-impact caps";
+        var confirmedErrorCount = activeIssues
+            .Where(issue => issue.Severity == IssueSeverity.Error && issue.Confidence == IssueConfidence.High)
+            .Select(issue => issue.RootCauseKey ?? $"{issue.RuleId ?? issue.Id}|{issue.ProjectName}|{issue.FilePath}|{issue.Title}")
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
 
         if (rootCauseCount == 0)
         {
@@ -64,7 +69,11 @@ public sealed class EngineeringAssessmentService
             ? $" Major root causes include {string.Join("; ", topRootCauses)}."
             : string.Empty;
 
-        return $"{scoreContext} across {rootCauseCount} active production root-cause finding(s).{rootCauseText}";
+        var capText = confirmedErrorCount > 0
+            ? $" A confirmed-error readiness cap was applied for {confirmedErrorCount} high-confidence Error root cause(s)."
+            : string.Empty;
+
+        return $"{scoreContext} across {rootCauseCount} active production root-cause finding(s).{capText}{rootCauseText}";
     }
 
     private static string GetScoreExplanationBucket(AnalysisIssue issue)
@@ -121,7 +130,12 @@ public sealed class EngineeringAssessmentService
         if (blockerCount > 0)
         {
             var concernText = GetConcernText(issues);
-            return $"Status: {status}. Score: {overallScore}/100. Review {blockerCount} high-severity findings before production hardening, especially around {concernText}.";
+            var confirmedErrorCount = issues.Count(issue =>
+                issue.Severity == IssueSeverity.Error && issue.Confidence == IssueConfidence.High);
+            var findingDescription = confirmedErrorCount > 0
+                ? $"{confirmedErrorCount} confirmed Error finding(s) require review before production approval"
+                : $"Review {blockerCount} high-severity findings before production hardening";
+            return $"Status: {status}. Score: {overallScore}/100. {findingDescription}, especially around {concernText}.";
         }
 
         var warnings = issues.Count(issue => issue.Severity == IssueSeverity.Warning);
