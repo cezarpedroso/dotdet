@@ -230,9 +230,49 @@ public static class AnalyzerUtilities
             : $"Evidence:{Environment.NewLine}{string.Join(Environment.NewLine, lines)}";
     }
 
+    public static (string Key, IReadOnlyList<string> Cycle) NormalizeCycle(IEnumerable<string> cycle)
+    {
+        var nodes = cycle
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .ToList();
+
+        if (nodes.Count > 1 && nodes[0].Equals(nodes[^1], StringComparison.OrdinalIgnoreCase))
+        {
+            nodes.RemoveAt(nodes.Count - 1);
+        }
+
+        if (nodes.Count == 0)
+        {
+            return (string.Empty, Array.Empty<string>());
+        }
+
+        var candidates = GetCycleRotations(nodes)
+            .Concat(GetCycleRotations(nodes.AsEnumerable().Reverse().ToArray()))
+            .Select(candidate => new
+            {
+                Nodes = candidate,
+                Key = string.Join('|', candidate.Select(node => node.ToUpperInvariant()))
+            })
+            .OrderBy(candidate => candidate.Key, StringComparer.Ordinal)
+            .ToArray();
+        var canonical = candidates[0].Nodes;
+
+        return (
+            candidates[0].Key,
+            canonical.Concat([canonical[0]]).ToArray());
+    }
+
     public static bool HasToken(string value, string token)
     {
         return value.Split('.', '-', '_').Any(part => part.Equals(token, StringComparison.OrdinalIgnoreCase))
             || value.EndsWith(token, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static IEnumerable<IReadOnlyList<string>> GetCycleRotations(IReadOnlyList<string> nodes)
+    {
+        for (var index = 0; index < nodes.Count; index++)
+        {
+            yield return nodes.Skip(index).Concat(nodes.Take(index)).ToArray();
+        }
     }
 }

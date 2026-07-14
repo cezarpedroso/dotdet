@@ -11,7 +11,10 @@ public sealed class EngineeringAssessmentService
         IReadOnlyList<AnalysisIssue> issues,
         ArchitectureMap architectureMap)
     {
-        var severityCounts = issues
+        var activeIssues = issues
+            .Where(issue => issue.Suppression is not { IsExpired: false })
+            .ToArray();
+        var severityCounts = activeIssues
             .GroupBy(issue => issue.Severity)
             .ToDictionary(group => group.Key, group => group.Count());
         var blockerCount = GetCount(severityCounts, IssueSeverity.Critical) + GetCount(severityCounts, IssueSeverity.Error);
@@ -19,15 +22,79 @@ public sealed class EngineeringAssessmentService
 
         return new EngineeringAssessmentSummary
         {
-            OverallProductionReadiness = BuildOverallReadiness(overallScore, status, blockerCount, issues),
-            StrongAreas = BuildStrongAreas(categoryScores, issues),
-            HighestRisks = BuildHighestRisks(categoryScores, issues),
-            ArchitecturalObservations = BuildArchitectureObservations(issues, architectureMap),
-            SecurityObservations = BuildCategoryObservations(issues, AnalysisCategories.Security, "Security and configuration"),
-            ApiReadinessObservations = BuildCategoryObservations(issues, AnalysisCategories.ApiReadiness, "API readiness"),
-            MaintainabilityObservations = BuildMaintainabilityObservations(issues, architectureMap),
-            RecommendedPriorities = BuildRecommendedPriorities(issues, architectureMap)
+            OverallProductionReadiness = BuildOverallReadiness(overallScore, status, blockerCount, activeIssues),
+            ScoreExplanation = BuildScoreExplanation(overallScore, categoryScores, activeIssues),
+            StrongAreas = BuildStrongAreas(categoryScores, activeIssues),
+            HighestRisks = BuildHighestRisks(categoryScores, activeIssues),
+            ArchitecturalObservations = BuildArchitectureObservations(activeIssues, architectureMap),
+            SecurityObservations = BuildCategoryObservations(activeIssues, AnalysisCategories.Security, "Security and configuration"),
+            ApiReadinessObservations = BuildCategoryObservations(activeIssues, AnalysisCategories.ApiReadiness, "API readiness"),
+            MaintainabilityObservations = BuildMaintainabilityObservations(activeIssues, architectureMap),
+            RecommendedPriorities = BuildRecommendedPriorities(activeIssues, architectureMap)
         };
+    }
+
+    private static string BuildScoreExplanation(
+        int overallScore,
+        CategoryScores scores,
+        IReadOnlyList<AnalysisIssue> issues)
+    {
+        var activeIssues = issues
+            .Where(issue => issue.Suppression is not { IsExpired: false })
+            .ToArray();
+        var rootCauseCount = activeIssues
+            .Select(issue => issue.RootCauseKey ?? $"{issue.RuleId ?? issue.Id}|{issue.ProjectName}|{issue.FilePath}|{issue.Title}")
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
+        var topRootCauses = GetOrderedIssues(activeIssues, null)
+            .DistinctBy(issue => issue.RootCauseKey ?? $"{issue.RuleId ?? issue.Id}|{issue.ProjectName}|{issue.FilePath}|{issue.Title}", StringComparer.OrdinalIgnoreCase)
+            .GroupBy(GetScoreExplanationBucket, StringComparer.OrdinalIgnoreCase)
+            .Take(3)
+            .Select(BuildScoreRootCauseSummary)
+            .ToArray();
+
+        var rootCauseText = topRootCauses.Length > 0
+            ? $" Major root causes include {string.Join("; ", topRootCauses)}."
+            : " No active root-cause findings were detected.";
+
+        return $"DotDet calculated the {overallScore}/100 readiness score from weighted category scores (Security {scores.Security}, API {scores.ApiReadiness}, EF Core {scores.EfCore}, Dependency Injection {scores.DependencyInjection}, Architecture {scores.Architecture}), finding severity, confidence, suppression state, and release-impact caps across {rootCauseCount} active root-cause finding(s).{rootCauseText}";
+    }
+
+    private static string GetScoreExplanationBucket(AnalysisIssue issue)
+    {
+        var ruleId = issue.RuleId ?? issue.Id;
+
+        return ruleId switch
+        {
+            "DI001" => "DI001",
+            "DI002" => "DI002",
+            "EF004" => "EF004",
+            "EF005" => "EF005",
+            _ => issue.RootCauseKey ?? $"{ruleId}|{issue.ProjectName}|{issue.FilePath}|{issue.Title}"
+        };
+    }
+
+    private static string BuildScoreRootCauseSummary(IGrouping<string, AnalysisIssue> group)
+    {
+        var representative = group.First();
+        var ruleId = representative.RuleId ?? representative.Id;
+
+        return ruleId switch
+        {
+            "DI001" when group.Count() > 1 => "duplicate DI registrations",
+            "DI001" => CleanRootCauseTitle(representative.Title),
+            "DI002" when group.Count() > 1 => "unregistered constructor dependencies",
+            "DI002" => CleanRootCauseTitle(representative.Title),
+            "SEC004" => "SEC004 authentication middleware mismatch",
+            _ => $"{ruleId} {CleanRootCauseTitle(representative.Title)}"
+        };
+    }
+
+    private static string CleanRootCauseTitle(string title)
+    {
+        return title
+            .Replace("Duplicate dependency injection registration", "duplicate DI registration", StringComparison.OrdinalIgnoreCase)
+            .Replace("Constructor dependency appears unregistered", "unregistered constructor dependency", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string BuildOverallReadiness(
@@ -40,13 +107,13 @@ public sealed class EngineeringAssessmentService
 
         if (criticalCount > 0 || (blockerCount >= 4 && overallScore < 60))
         {
-            var concernText = string.Join(", ", GetTopConcernLabels(issues, 3));
+            var concernText = GetConcernText(issues);
             return $"Status: {status}. Score: {overallScore}/100. The solution has {blockerCount} critical/error production findings, with the highest risk concentrated in {concernText}.";
         }
 
         if (blockerCount > 0)
         {
-            var concernText = string.Join(", ", GetTopConcernLabels(issues, 3));
+            var concernText = GetConcernText(issues);
             return $"Status: {status}. Score: {overallScore}/100. Review {blockerCount} high-severity findings before production hardening, especially around {concernText}.";
         }
 
@@ -75,10 +142,22 @@ public sealed class EngineeringAssessmentService
 
     private static IReadOnlyList<string> BuildHighestRisks(CategoryScores scores, IReadOnlyList<AnalysisIssue> issues)
     {
-        return GetCategoryProfiles(scores, issues)
+        var profiles = GetCategoryProfiles(scores, issues);
+        var riskProfiles = profiles
+            .Where(profile => profile.BlockerCount > 0 || profile.RiskIssueCount > 0 || profile.Score < 100)
+            .ToArray();
+
+        if (riskProfiles.Any(profile => profile.BlockerCount > 0 || profile.RiskIssueCount > 0))
+        {
+            riskProfiles = riskProfiles
+                .Where(profile => profile.BlockerCount > 0 || profile.RiskIssueCount > 0)
+                .ToArray();
+        }
+
+        var highestRisks = riskProfiles
             .OrderByDescending(profile => profile.BlockerCount)
             .ThenBy(profile => profile.Score)
-            .ThenByDescending(profile => profile.IssueCount)
+            .ThenByDescending(profile => profile.RiskIssueCount)
             .Take(3)
             .Select(profile =>
             {
@@ -87,9 +166,13 @@ public sealed class EngineeringAssessmentService
                     return $"{profile.Label}: {profile.BlockerCount} critical/error findings and score {profile.Score}/100.";
                 }
 
-                return $"{profile.Label}: score {profile.Score}/100 with {profile.IssueCount} findings to review.";
+                return $"{profile.Label}: score {profile.Score}/100 with {profile.RiskIssueCount} findings to review.";
             })
             .ToArray();
+
+        return highestRisks.Length > 0
+            ? highestRisks
+            : ["No high-priority category risks were detected."];
     }
 
     private static IReadOnlyList<string> BuildArchitectureObservations(
@@ -136,9 +219,8 @@ public sealed class EngineeringAssessmentService
         IReadOnlyList<AnalysisIssue> issues,
         ArchitectureMap map)
     {
-        var maintainabilityIssues = issues
+        var maintainabilityIssues = GetOrderedIssues(issues, null)
             .Where(issue => issue.Category is AnalysisCategories.Architecture or AnalysisCategories.DependencyInjection or AnalysisCategories.EfCore)
-            .OrderByDescending(issue => issue.Severity)
             .Take(3)
             .Select(issue => $"{issue.Title} can increase operational or change risk if left unresolved.")
             .ToList();
@@ -160,9 +242,14 @@ public sealed class EngineeringAssessmentService
     {
         var priorities = GetOrderedIssues(issues, null)
             .Where(issue => issue.Severity is IssueSeverity.Critical or IssueSeverity.Error or IssueSeverity.Warning)
-            .GroupBy(issue => new { Rule = issue.RuleId ?? issue.Id, issue.Title, issue.Recommendation })
+            .GroupBy(GetRoadmapGroupKey, StringComparer.OrdinalIgnoreCase)
             .Select(group =>
             {
+                var representative = group
+                    .OrderByDescending(issue => issue.Severity)
+                    .ThenBy(issue => GetPriorityRank(issue))
+                    .ThenByDescending(issue => issue.Confidence ?? IssueConfidence.Medium)
+                    .First();
                 var highestSeverity = group.Max(issue => issue.Severity);
                 var productionProjects = group
                     .Select(issue => issue.ProjectName)
@@ -178,21 +265,34 @@ public sealed class EngineeringAssessmentService
 
                 return new
                 {
-                    group.Key.Rule,
-                    group.Key.Title,
-                    group.Key.Recommendation,
+                    Rule = representative.RuleId ?? representative.Id,
+                    representative.Title,
+                    representative.Recommendation,
+                    representative.Category,
                     Count = group.Count(),
+                    Titles = group
+                        .Select(issue => issue.Title)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .Take(3)
+                        .ToArray(),
                     HighestSeverity = highestSeverity,
-                    Scope = scope
+                    HighestConfidence = group.Max(issue => issue.Confidence ?? IssueConfidence.Medium),
+                    Scope = scope ?? "solution scope"
                 };
             })
             .OrderByDescending(item => item.HighestSeverity)
+            .ThenBy(item => GetPriorityRank(item.Category, item.Rule))
+            .ThenByDescending(item => item.HighestConfidence)
             .ThenByDescending(item => item.Count)
             .ThenBy(item => item.Title)
             .Take(5)
-            .Select(item => item.Count > 1
-                ? $"{item.Rule}: {item.Title} in {item.Scope}. {item.Recommendation}"
-                : $"{item.Rule}: {item.Recommendation}")
+            .Select(item => BuildRoadmapItem(
+                item.Rule,
+                item.Title,
+                item.Recommendation,
+                item.Count,
+                item.Scope,
+                item.Titles))
             .ToList();
 
         if (map.Violations.Any(violation => violation.RelatedFindingId is null))
@@ -215,9 +315,43 @@ public sealed class EngineeringAssessmentService
             .Select(issue => $"{issue.Title} ({issue.Severity}) affects {issue.ProjectName ?? "solution scope"}.");
     }
 
+    private static string GetRoadmapGroupKey(AnalysisIssue issue)
+    {
+        var ruleId = issue.RuleId ?? issue.Id;
+
+        return ruleId switch
+        {
+            "DI001" or "DI002" => $"{ruleId}|{issue.ProjectName ?? "Solution"}",
+            _ => issue.RootCauseKey ?? $"{ruleId}|{issue.Category}|{issue.ProjectName}|{issue.Title}"
+        };
+    }
+
+    private static string BuildRoadmapItem(
+        string ruleId,
+        string title,
+        string recommendation,
+        int count,
+        string scope,
+        IReadOnlyList<string> titles)
+    {
+        if (ruleId == "DI001" && count > 1)
+        {
+            return $"DI001: Consolidate duplicate registrations in {scope}: {string.Join(", ", titles)}.";
+        }
+
+        if (ruleId == "DI002" && count > 1)
+        {
+            return $"DI002: Register missing dependencies in {scope}: {string.Join(", ", titles)}.";
+        }
+
+        return count > 1
+            ? $"{ruleId}: {title} in {scope}. {recommendation}"
+            : $"{ruleId}: {recommendation}";
+    }
+
     private static IReadOnlyList<string> GetTopConcernLabels(IReadOnlyList<AnalysisIssue> issues, int count)
     {
-        return issues
+        return GetOrderedIssues(issues, null)
             .GroupBy(issue => issue.Category)
             .Select(group => new
             {
@@ -236,13 +370,75 @@ public sealed class EngineeringAssessmentService
             .ToArray();
     }
 
+    private static string GetConcernText(IReadOnlyList<AnalysisIssue> issues)
+    {
+        var concerns = GetTopConcernLabels(issues, 3);
+
+        return concerns.Count > 0
+            ? string.Join(", ", concerns)
+            : "the active findings";
+    }
+
     private static IEnumerable<AnalysisIssue> GetOrderedIssues(IReadOnlyList<AnalysisIssue> issues, string? category)
     {
-        return issues
+        var candidates = issues
             .Where(issue => category is null || issue.Category == category)
+            .Where(issue => issue.Severity != IssueSeverity.Info)
+            .ToArray();
+
+        if (candidates.Any(issue => (issue.Confidence ?? IssueConfidence.Medium) != IssueConfidence.Low))
+        {
+            candidates = candidates
+                .Where(issue => (issue.Confidence ?? IssueConfidence.Medium) != IssueConfidence.Low)
+                .ToArray();
+        }
+
+        return candidates
             .OrderByDescending(issue => issue.Severity)
+            .ThenByDescending(issue => issue.Confidence ?? IssueConfidence.Medium)
+            .ThenBy(issue => GetPriorityRank(issue))
             .ThenBy(issue => issue.ProjectName)
             .ThenBy(issue => issue.Title);
+    }
+
+    private static int GetPriorityRank(AnalysisIssue issue)
+    {
+        return GetPriorityRank(issue.Category, issue.RuleId ?? issue.Id);
+    }
+
+    private static int GetPriorityRank(string category, string ruleId)
+    {
+        if (category == AnalysisCategories.Security && ruleId.Contains("AUTH", StringComparison.OrdinalIgnoreCase))
+        {
+            return 1;
+        }
+
+        if (category == AnalysisCategories.Security)
+        {
+            return 2;
+        }
+
+        if (category == AnalysisCategories.Architecture)
+        {
+            return 3;
+        }
+
+        if (category == AnalysisCategories.DependencyInjection)
+        {
+            return 4;
+        }
+
+        if (category == AnalysisCategories.EfCore)
+        {
+            return 5;
+        }
+
+        if (category == AnalysisCategories.ApiReadiness)
+        {
+            return 6;
+        }
+
+        return 7;
     }
 
     private static IReadOnlyList<CategoryProfile> GetCategoryProfiles(CategoryScores scores, IReadOnlyList<AnalysisIssue> issues)
@@ -264,13 +460,19 @@ public sealed class EngineeringAssessmentService
         IReadOnlyList<AnalysisIssue> issues)
     {
         var categoryIssues = issues.Where(issue => issue.Category == category).ToArray();
+        var riskIssues = categoryIssues
+            .Where(issue =>
+                issue.Severity != IssueSeverity.Info
+                && (issue.Confidence ?? IssueConfidence.Medium) != IssueConfidence.Low)
+            .ToArray();
 
         return new CategoryProfile(
             category,
             label,
             score,
             categoryIssues.Length,
-            categoryIssues.Count(issue => issue.Severity is IssueSeverity.Critical or IssueSeverity.Error));
+            riskIssues.Length,
+            riskIssues.Count(issue => issue.Severity is IssueSeverity.Critical or IssueSeverity.Error));
     }
 
     private static string GetReadinessStatus(int score, int blockerCount, int warningCount)
@@ -306,5 +508,6 @@ public sealed class EngineeringAssessmentService
         string Label,
         int Score,
         int IssueCount,
+        int RiskIssueCount,
         int BlockerCount);
 }

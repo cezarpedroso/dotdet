@@ -46,12 +46,8 @@ public sealed class ScoringService
     {
         var groupedIssues = issues
             .Where(issue => issue.Suppression is not { IsExpired: false })
-            .GroupBy(issue => new
-            {
-                Rule = issue.RuleId ?? issue.Id,
-                issue.Category,
-                Project = issue.ProjectName ?? "Solution"
-            });
+            .GroupBy(issue => issue.RootCauseKey
+                ?? $"{issue.RuleId ?? issue.Id}|{issue.Category}|{issue.ProjectName ?? "Solution"}|{issue.FilePath ?? string.Empty}");
         var penalty = groupedIssues.Sum(group =>
         {
             var orderedPenalties = group
@@ -76,9 +72,13 @@ public sealed class ScoringService
 
     private static int ApplyCriticalCap(int score, IEnumerable<AnalysisIssue> issues)
     {
-        var activeCriticalCount = issues.Count(issue =>
-            issue.Severity == IssueSeverity.Critical
-            && issue.Suppression is not { IsExpired: false });
+        var activeCriticalCount = issues
+            .Where(issue =>
+                issue.Severity == IssueSeverity.Critical
+                && issue.Suppression is not { IsExpired: false })
+            .Select(GetRootCauseKey)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
 
         var cap = activeCriticalCount switch
         {
@@ -114,5 +114,11 @@ public sealed class ScoringService
             IssueSeverity.Info => 1,
             _ => 0
         };
+    }
+
+    private static string GetRootCauseKey(AnalysisIssue issue)
+    {
+        return issue.RootCauseKey
+            ?? $"{issue.RuleId ?? issue.Id}|{issue.Category}|{issue.ProjectName ?? "Solution"}|{issue.FilePath ?? string.Empty}";
     }
 }

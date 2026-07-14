@@ -163,7 +163,9 @@ public sealed class ArchitectureAnalyzer
             project,
             reference?.FilePath ?? project.FilePath,
             reference?.LineNumber,
-            recommendation);
+            recommendation,
+            reference is null ? IssueConfidence.Medium : IssueConfidence.High,
+            reference is null ? IssueEnrichmentService.MsBuildProjectConfiguration : IssueEnrichmentService.RoslynSemanticAnalysis);
     }
 
     private AnalysisIssue CreateFrameworkDependencyIssue(
@@ -212,14 +214,14 @@ public sealed class ArchitectureAnalyzer
                 .ToArray(),
             StringComparer.OrdinalIgnoreCase);
 
-        var cycles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var cycles = new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var projectName in adjacency.Keys)
         {
             Visit(projectName, new List<string>(), new HashSet<string>(StringComparer.OrdinalIgnoreCase));
         }
 
-        return cycles.Select(cycle => (IReadOnlyList<string>)cycle.Split('|'));
+        return cycles.Values;
 
         void Visit(string projectName, List<string> path, HashSet<string> visiting)
         {
@@ -228,7 +230,11 @@ public sealed class ArchitectureAnalyzer
                 var startIndex = path.FindIndex(name => name.Equals(projectName, StringComparison.OrdinalIgnoreCase));
                 if (startIndex >= 0)
                 {
-                    cycles.Add(string.Join('|', path.Skip(startIndex).Concat([projectName])));
+                    var normalizedCycle = AnalyzerUtilities.NormalizeCycle(path.Skip(startIndex).Concat([projectName]));
+                    if (!string.IsNullOrWhiteSpace(normalizedCycle.Key))
+                    {
+                        cycles.TryAdd(normalizedCycle.Key, normalizedCycle.Cycle);
+                    }
                 }
 
                 return;

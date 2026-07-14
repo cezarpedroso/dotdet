@@ -1,6 +1,7 @@
-﻿import {
+import {
   AlertTriangle,
   Blocks,
+  Braces,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -12,6 +13,8 @@
   ExternalLink,
   FileArchive,
   FileCode2,
+  FileDown,
+  FileSearch,
   FileText,
   Filter,
   FolderGit2,
@@ -32,7 +35,7 @@
   type LucideIcon,
 } from 'lucide-react'
 import Editor, { type OnMount } from '@monaco-editor/react'
-import { type ChangeEvent, type FormEvent, useEffect, useMemo, useState } from 'react'
+import { type ChangeEvent, type FormEvent, type MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useState } from 'react'
 
 type Severity = 'Info' | 'Warning' | 'Error' | 'Critical'
 type IssueConfidence = 'High' | 'Medium' | 'Low'
@@ -44,7 +47,8 @@ type ProjectFilter = 'All' | string
 type SortMode = 'Severity' | 'Category' | 'Project' | 'File'
 type AnalysisMode = 'path' | 'zip'
 type AppPage = 'Overview' | 'Findings' | 'Code Explorer' | 'Architecture' | 'Rule Explorer' | 'Settings'
-type StartPage = 'Home' | 'Dashboard' | 'Analyze' | 'Settings'
+type StartPage = 'Home' | 'Docs' | 'Contact' | 'Changelog' | 'Dashboard' | 'Analyze' | 'Reports' | 'Rules' | 'Settings'
+type AnalyzeTab = 'GitHub Repository' | 'Upload ZIP' | 'Sample Project'
 type ResizePanel = 'explorer' | 'guide'
 type DensityMode = 'Compact' | 'Comfortable'
 type CommandBarMode = 'Compact Microsoft style' | 'Expanded'
@@ -83,6 +87,13 @@ type DocumentationLink = {
   href: string
 }
 
+type AnalysisEvidence = {
+  label: string
+  detail: string
+  filePath?: string
+  lineNumber?: number
+}
+
 type AnalysisIssue = {
   id: string
   ruleId?: string
@@ -103,6 +114,8 @@ type AnalysisIssue = {
   suggestedImplementation?: string
   documentationLinks?: DocumentationLink[]
   relatedFindingIds?: string[]
+  evidence?: AnalysisEvidence[]
+  rootCauseKey?: string
   suggestedSnippet?: string
   goodExample?: string
   badExample?: string
@@ -212,6 +225,7 @@ type EngineeringAssessmentSummary = {
 }
 
 type AnalysisResult = {
+  analysisRunId?: string
   solutionName: string
   analyzedAt: string
   overallScore: number
@@ -219,6 +233,9 @@ type AnalysisResult = {
   issues: AnalysisIssue[]
   projectGraph: ProjectGraph
   sourceFiles?: AnalysisSourceFile[]
+  isHistoricalSnapshot?: boolean
+  sourcePreviewAvailable?: boolean
+  sourcePreviewUnavailableReason?: string
   architectureMap?: ArchitectureMap
   engineeringAssessment?: EngineeringAssessmentSummary
   solutionPath?: string
@@ -275,12 +292,72 @@ type AuthMeResponse = {
   user: AuthUser | null
 }
 
-const API_BASE_URL = import.meta.env.VITE_DOTDET_API_URL ?? import.meta.env.VITE_FORGE_API_URL ?? 'http://127.0.0.1:5241'
+type AnalysisSourceType = 'GitHubRepo' | 'ZipUpload' | 'SampleProject' | 'LocalDevPath'
+
+type AnalysisHistorySummary = {
+  id: string
+  solutionName: string
+  sourceType: AnalysisSourceType
+  sourceLabel: string
+  sourceUrl?: string
+  gitHubOwner?: string
+  gitHubRepo?: string
+  gitRef?: string
+  repositoryVisibility?: string
+  score: number
+  grade: string
+  status: string
+  openFindingCount: number
+  totalFindingCount: number
+  createdAt: string
+  completedAt: string
+  canRerun: boolean
+}
+
+type AnalysisHistoryDetail = {
+  summary: AnalysisHistorySummary
+  result: AnalysisResult
+}
+
+type GitHubRepositoryListingResponse = {
+  isAvailable?: boolean
+  reason?: string
+  enabled: boolean
+  message: string
+  privateAccessEnabled?: boolean
+  privateAccessMessage?: string
+  repositories: Array<{
+    owner: string
+    name: string
+    visibility?: string
+    defaultBranch?: string
+    description?: string
+    htmlUrl?: string
+    updatedAt?: string
+  }>
+}
+
+const localApiHost =
+  typeof window !== 'undefined' && ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname)
+    ? window.location.hostname
+    : '127.0.0.1'
+const formattedLocalApiHost = localApiHost === '::1' ? '[::1]' : localApiHost
+const API_BASE_URL =
+  import.meta.env.VITE_DOTDET_API_URL
+  ?? import.meta.env.VITE_FORGE_API_URL
+  ?? `http://${formattedLocalApiHost}:5241`
+const DOTDET_REPOSITORY_URL = 'https://github.com/cezarpedroso/dotdet'
+const DOTDET_ISSUES_URL = 'https://github.com/cezarpedroso/DotDet/issues'
+const SCHEMA_ARCHITECT_URL = 'https://schemarchitect.azurewebsites.net/'
 
 const explorerWidthStorageKey = 'det.codeExplorer.explorerWidth'
 const guideWidthStorageKey = 'det.codeExplorer.guideWidth'
 const lastAnalysisResultStorageKey = 'det.analysis.lastResult.v1'
 const lastAnalysisSolutionPathStorageKey = 'det.analysis.lastSolutionPath'
+const browserStorageSourcePreviewUnavailableReason =
+  'Source preview is not persisted in browser storage. Re-run the analysis to inspect source preview again.'
+const exportSourcePreviewUnavailableReason =
+  'Source preview is not included in this export.'
 const activePageStorageKey = 'det.workbench.activePage'
 const selectedIssueStorageKey = 'det.workbench.selectedIssueId'
 const selectedFileStorageKey = 'det.workbench.selectedFileId'
@@ -333,6 +410,12 @@ const severityRank: Record<Severity, number> = {
   Info: 1,
 }
 
+const confidenceRank: Record<IssueConfidence, number> = {
+  High: 3,
+  Medium: 2,
+  Low: 1,
+}
+
 const severityTextTone: Record<Severity, string> = {
   Critical: 'text-red-700',
   Error: 'text-red-700',
@@ -351,7 +434,6 @@ const selectedRowClass = 'bg-[#252a26] border-l-2 border-l-[#2ea043]'
 
 function App() {
   const [storedWorkbenchState] = useState(() => loadStoredWorkbenchState())
-  const [mode, setMode] = useState<AnalysisMode>('zip')
   const [solutionPath] = useState('')
   const [zipFile, setZipFile] = useState<File | null>(null)
   const [result, setResult] = useState<AnalysisResult | null>(storedWorkbenchState.result)
@@ -361,6 +443,10 @@ function App() {
   const [startPage, setStartPage] = useState<StartPage>(() => getStartPageFromPath(Boolean(storedWorkbenchState.result)))
   const [authUser, setAuthUser] = useState<AuthUser | null>(null)
   const [authLoading, setAuthLoading] = useState(true)
+  const [analysisHistory, setAnalysisHistory] = useState<AnalysisHistorySummary[]>([])
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyError, setHistoryError] = useState<string | null>(null)
+  const [analyzeTab, setAnalyzeTab] = useState<AnalyzeTab>('Upload ZIP')
   const [density, setDensity] = useState<DensityMode>(() => getStoredString(densityStorageKey, 'Compact', ['Compact', 'Comfortable'] as const))
   const [commandBarMode, setCommandBarMode] = useState<CommandBarMode>(() =>
     getStoredString(commandBarStorageKey, 'Compact Microsoft style', ['Compact Microsoft style', 'Expanded'] as const),
@@ -390,9 +476,32 @@ function App() {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const severityCounts = useMemo(() => getSeverityCounts(result?.issues ?? []), [result])
-  const projectIssueCounts = useMemo(() => getProjectIssueCounts(result?.issues ?? []), [result])
+  const activeIssues = useMemo(() => (result ? getOpenFindings(result, findingDispositions) : []), [findingDispositions, result])
+  const summaryResult = useMemo(() => (result ? rebuildAnalysisResultForActiveFindings(result, activeIssues) : null), [activeIssues, result])
+  const severityCounts = useMemo(() => getSeverityCounts(activeIssues), [activeIssues])
+  const projectIssueCounts = useMemo(() => getProjectIssueCounts(activeIssues), [activeIssues])
   const codeFiles = useMemo(() => (result ? buildCodeFiles(result) : []), [result])
+
+  const refreshHistory = useCallback(async () => {
+    if (!authUser) {
+      return
+    }
+
+    setHistoryLoading(true)
+    setHistoryError(null)
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/analysis/history`, { credentials: 'include' })
+      if (!response.ok) {
+        throw new Error(`History request failed with HTTP ${response.status}`)
+      }
+
+      setAnalysisHistory((await response.json()) as AnalysisHistorySummary[])
+    } catch (caughtError) {
+      setHistoryError(caughtError instanceof Error ? caughtError.message : 'Analysis history could not be loaded.')
+    } finally {
+      setHistoryLoading(false)
+    }
+  }, [authUser])
 
   const filteredIssues = useMemo(() => {
     if (!result) {
@@ -479,7 +588,10 @@ function App() {
         if (auth.isAuthenticated && window.location.pathname === '/') {
           navigateToPath('/dashboard', true)
           setStartPage('Dashboard')
-        } else if (!auth.isAuthenticated && window.location.pathname.toLowerCase().startsWith('/dashboard')) {
+        } else if (
+          !auth.isAuthenticated
+          && ['/dashboard', '/analyze', '/reports', '/rules', '/settings'].some((path) => window.location.pathname.toLowerCase().startsWith(path))
+        ) {
           navigateToPath('/', true)
           setStartPage('Home')
         }
@@ -499,6 +611,17 @@ function App() {
       cancelled = true
     }
   }, [])
+
+  useEffect(() => {
+    if (!authUser) {
+      setAnalysisHistory([])
+      setHistoryError(null)
+      setHistoryLoading(false)
+      return
+    }
+
+    refreshHistory()
+  }, [authUser, refreshHistory])
 
   useEffect(() => {
     let cancelled = false
@@ -561,7 +684,7 @@ function App() {
 
   useEffect(() => {
     if (result) {
-      safeSetLocalStorage(lastAnalysisResultStorageKey, JSON.stringify(result))
+      safeSetLocalStorage(lastAnalysisResultStorageKey, JSON.stringify(sanitizeAnalysisResultForBrowserStorage(result)))
     } else {
       localStorage.removeItem(lastAnalysisResultStorageKey)
     }
@@ -665,7 +788,7 @@ function App() {
     })
   }, [result, ruleCatalog])
 
-  const canAnalyze = mode === 'path' ? solutionPath.trim().length > 0 : zipFile !== null
+  const canAnalyze = zipFile !== null
 
   async function analyze(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -677,7 +800,54 @@ function App() {
     await runAnalysis('sample', '', null)
   }
 
-  async function runAnalysis(requestMode: AnalysisMode | 'sample' = mode, requestPath = solutionPath, requestFile = zipFile) {
+  async function analyzeGitHubRepository(repositoryInput: string) {
+    if (!repositoryInput.trim()) {
+      setError('Enter a GitHub repository URL or owner/repo.')
+      return
+    }
+
+    setIsLoading(true)
+    setError(null)
+    setResult(null)
+    setSelectedIssueId(null)
+    setSelectedRuleId(null)
+    setSelectedFileId(null)
+    setActiveCategory('All')
+    setActiveSeverity('All')
+    setActiveProject('All')
+    setSortMode(defaultSortMode)
+    setQuery('')
+    setZipFile(null)
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/github/analyze-repo`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repository: repositoryInput, repositoryUrl: repositoryInput }),
+      })
+
+      if (!response.ok) {
+        const message = await response.text()
+        throw new Error(message || `GitHub repository analysis failed with HTTP ${response.status}`)
+      }
+
+      const analysis = (await response.json()) as AnalysisResult
+      setResult(analysis)
+      setAnalysisSolutionPath(null)
+      setStartPage('Analyze')
+      setActivePage('Code Explorer')
+      if (authUser) {
+        await refreshHistory()
+      }
+    } catch (caughtError) {
+      setError(caughtError instanceof Error ? caughtError.message : 'GitHub repository analysis failed.')
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  async function runAnalysis(requestMode: AnalysisMode | 'sample' = 'zip', requestPath = solutionPath, requestFile = zipFile) {
     const hasInput = requestMode === 'path' ? requestPath.trim().length > 0 : requestFile !== null
     if (requestMode !== 'sample' && !hasInput) {
       return
@@ -721,6 +891,9 @@ function App() {
       setAnalysisSolutionPath(analysis.solutionPath ?? (requestMode === 'path' ? requestPath.trim() : null))
       setStartPage('Analyze')
       setActivePage('Code Explorer')
+      if (authUser) {
+        await refreshHistory()
+      }
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : 'Analysis failed.')
     } finally {
@@ -748,12 +921,14 @@ function App() {
   }
 
   async function logout() {
+    clearCachedAnalysisState()
     await fetch(`${API_BASE_URL}/api/auth/logout`, {
       credentials: 'include',
       method: 'POST',
     })
     setAuthUser(null)
     setResult(null)
+    clearCachedAnalysisState()
     setSelectedIssueId(null)
     setSelectedFileId(null)
     setStartPage('Home')
@@ -763,6 +938,97 @@ function App() {
   function setStartPageAndPath(page: StartPage) {
     setStartPage(page)
     navigateToPath(getPathForStartPage(page))
+  }
+
+  function openAnalyzeTab(tab: AnalyzeTab) {
+    setAnalyzeTab(tab)
+    setStartPageAndPath('Analyze')
+  }
+
+  async function openHistoryReport(id: string) {
+    setHistoryError(null)
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/analysis/history/${encodeURIComponent(id)}`, { credentials: 'include' })
+      if (!response.ok) {
+        throw new Error(`Report request failed with HTTP ${response.status}`)
+      }
+
+      const detail = (await response.json()) as AnalysisHistoryDetail
+      setResult(detail.result)
+      setAnalysisSolutionPath(null)
+      setSelectedIssueId(detail.result.issues[0]?.id ?? null)
+      setSelectedRuleId(getHighestRiskActiveRuleId(ruleCatalog, detail.result.issues) ?? null)
+      setSelectedFileId(getFileId(detail.result.issues[0]?.filePath) || buildCodeFiles(detail.result)[0]?.id || null)
+      setActivePage('Overview')
+      setStartPage('Reports')
+      navigateToPath('/reports')
+    } catch (caughtError) {
+      setHistoryError(caughtError instanceof Error ? caughtError.message : 'Saved report could not be opened.')
+    }
+  }
+
+  async function rerunHistoryReport(id: string) {
+    setIsLoading(true)
+    setHistoryError(null)
+    setError(null)
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/analysis/history/${encodeURIComponent(id)}/rerun`, {
+        credentials: 'include',
+        method: 'POST',
+      })
+      if (!response.ok) {
+        const message = await response.text()
+        throw new Error(message || `Re-run failed with HTTP ${response.status}`)
+      }
+
+      const analysis = (await response.json()) as AnalysisResult
+      setResult(analysis)
+      setAnalysisSolutionPath(null)
+      setActivePage('Code Explorer')
+      setStartPage('Reports')
+      await refreshHistory()
+    } catch (caughtError) {
+      setHistoryError(caughtError instanceof Error ? caughtError.message : 'Saved report could not be re-run.')
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  async function deleteHistoryReport(id: string) {
+    setHistoryError(null)
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/analysis/history/${encodeURIComponent(id)}`, {
+        credentials: 'include',
+        method: 'DELETE',
+      })
+      if (!response.ok && response.status !== 404) {
+        throw new Error(`Delete failed with HTTP ${response.status}`)
+      }
+
+      setAnalysisHistory((current) => current.filter((item) => item.id !== id))
+    } catch (caughtError) {
+      setHistoryError(caughtError instanceof Error ? caughtError.message : 'Saved report could not be deleted.')
+    }
+  }
+
+  async function exportHistoryReport(id: string, format: ExportFormat) {
+    setHistoryError(null)
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/analysis/history/${encodeURIComponent(id)}`, { credentials: 'include' })
+      if (!response.ok) {
+        throw new Error(`Report request failed with HTTP ${response.status}`)
+      }
+
+      const detail = (await response.json()) as AnalysisHistoryDetail
+      exportReport(detail.result, {
+        codeFiles: buildCodeFiles(detail.result),
+        dispositions: findingDispositions,
+        format,
+        includeSourcePreview,
+      })
+    } catch (caughtError) {
+      setHistoryError(caughtError instanceof Error ? caughtError.message : 'Saved report could not be exported.')
+    }
   }
 
   function onFileChange(event: ChangeEvent<HTMLInputElement>) {
@@ -820,30 +1086,27 @@ function App() {
       return
     }
 
-    const key = getFindingDispositionKey(result.solutionName, issue)
-    setFindingDispositions((current) => {
-      const next = { ...current }
-      if (disposition === 'Open') {
-        delete next[key]
-      } else {
-        next[key] = disposition
-      }
-      return next
-    })
-
-    if (!analysisSolutionPath) {
+    if (!result.analysisRunId) {
+      setError('Suppressions are not available for this analysis source yet.')
       return
     }
+
+    const key = getFindingDispositionKey(result.solutionName, issue)
 
     try {
       if (disposition === 'Open') {
         if (!issue.suppression) {
+          setFindingDispositions((current) => {
+            const next = { ...current }
+            delete next[key]
+            return next
+          })
           return
         }
 
         const response = await fetch(
-          `${API_BASE_URL}/api/suppressions/${encodeURIComponent(issue.suppression.id)}?solutionPath=${encodeURIComponent(analysisSolutionPath)}`,
-          { method: 'DELETE' },
+          `${API_BASE_URL}/api/suppressions/${encodeURIComponent(issue.suppression.id)}?analysisRunId=${encodeURIComponent(result.analysisRunId)}`,
+          { credentials: 'include', method: 'DELETE' },
         )
 
         if (!response.ok && response.status !== 404) {
@@ -851,18 +1114,22 @@ function App() {
         }
 
         setResult((current) => current ? removeIssueSuppression(current, issue.id) : current)
+        setFindingDispositions((current) => {
+          const next = { ...current }
+          delete next[key]
+          return next
+        })
         return
       }
 
       const response = await fetch(`${API_BASE_URL}/api/suppressions`, {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          file: issue.filePath,
-          project: issue.projectName,
+          analysisRunId: result.analysisRunId,
+          findingId: issue.id,
           reason: `${disposition} set from the DotDet workbench.`,
-          ruleId: getRuleId(issue),
-          solutionPath: analysisSolutionPath,
           status: disposition,
         }),
       })
@@ -873,6 +1140,10 @@ function App() {
 
       const suppression = (await response.json()) as RepositorySuppression
       setResult((current) => current ? applyIssueSuppression(current, issue.id, suppression) : current)
+      setFindingDispositions((current) => ({
+        ...current,
+        [key]: disposition,
+      }))
     } catch (suppressionError) {
       setError(suppressionError instanceof Error ? suppressionError.message : 'Repository suppression update failed.')
     }
@@ -935,23 +1206,70 @@ function App() {
             showGutterMarkers={showGutterMarkers}
             showMinimapMarkers={showMinimapMarkers}
           />
+        ) : !authUser && startPage === 'Docs' ? (
+          <DocsPage />
+        ) : !authUser && startPage === 'Contact' ? (
+          <ContactPage />
+        ) : !authUser && startPage === 'Changelog' ? (
+          <ChangelogPage />
         ) : !authUser ? (
           <HomePage
             onLogin={loginWithGitHub}
             onAnalyzeSample={analyzeSample}
           />
-        ) : startPage === 'Dashboard' || startPage === 'Analyze' ? (
+        ) : startPage === 'Dashboard' ? (
           <DashboardPage
             authUser={authUser}
+            history={analysisHistory}
+            historyError={historyError}
+            historyLoading={historyLoading}
+            isLoading={isLoading}
+            onAnalyzeSample={analyzeSample}
+            onExportHistory={exportHistoryReport}
+            onOpenAnalyze={openAnalyzeTab}
+            onOpenHistory={openHistoryReport}
+            onRerunHistory={rerunHistoryReport}
+          />
+        ) : startPage === 'Analyze' ? (
+          <AnalyzePage
+            activeTab={analyzeTab}
             canAnalyze={canAnalyze}
             error={error}
             isLoading={isLoading}
-            mode={mode}
+            onActiveTabChange={setAnalyzeTab}
+            onAnalyzeGitHubRepository={analyzeGitHubRepository}
             onAnalyzeSample={analyzeSample}
+            onClearCachedAnalysisState={() => {
+              clearCachedAnalysisState()
+              setResult(null)
+              setSelectedIssueId(null)
+              setSelectedFileId(null)
+            }}
             onFileChange={onFileChange}
-            onModeChange={setMode}
             onSubmit={analyze}
             zipFile={zipFile}
+          />
+        ) : startPage === 'Reports' ? (
+          <ReportsPage
+            history={analysisHistory}
+            historyError={historyError}
+            historyLoading={historyLoading}
+            isLoading={isLoading}
+            onDelete={deleteHistoryReport}
+            onExport={exportHistoryReport}
+            onOpenAnalyze={openAnalyzeTab}
+            onRefresh={refreshHistory}
+            onRerun={rerunHistoryReport}
+            onView={openHistoryReport}
+          />
+        ) : startPage === 'Rules' ? (
+          <RuleExplorerPage
+            currentIssues={[]}
+            error={ruleCatalogError}
+            onOpenIssue={() => undefined}
+            onSelectRule={setSelectedRuleId}
+            rules={ruleCatalog}
+            selectedRuleId={selectedRuleId}
           />
         ) : (
           <HomePage
@@ -964,7 +1282,7 @@ function App() {
           {activePage === 'Overview' ? (
             <OverviewPage
               projectCount={result.projectGraph.projects.length}
-              result={result}
+              result={summaryResult ?? result}
               severityCounts={severityCounts}
               onOpenArchitecture={() => setActivePage('Architecture')}
               onOpenFindings={() => setActivePage('Findings')}
@@ -1119,7 +1437,10 @@ function AppShell({
   ]
   const startItems: Array<{ page: StartPage; icon: LucideIcon; label: string }> = authUser
     ? [
-        { page: 'Dashboard', icon: FolderSearch, label: 'Analyze Solution' },
+        { page: 'Dashboard', icon: LayoutDashboard, label: 'Dashboard' },
+        { page: 'Analyze', icon: FolderSearch, label: 'Analyze' },
+        { page: 'Reports', icon: FileText, label: 'Reports' },
+        { page: 'Rules', icon: ListChecks, label: 'Rules' },
       ]
     : [
         { page: 'Home', icon: LayoutDashboard, label: 'Home' },
@@ -1129,7 +1450,9 @@ function AppShell({
   const displayName = authUser?.displayName || authUser?.githubUsername
   const [isExportMenuOpen, setExportMenuOpen] = useState(false)
 
-  if (!result && !authUser && startPage === 'Home') {
+  const isPublicPage = startPage === 'Home' || startPage === 'Docs' || startPage === 'Contact' || startPage === 'Changelog'
+
+  if (!result && !authUser && isPublicPage) {
     return (
       <main className={`night-mode det-public-shell min-h-screen overflow-auto text-slate-100 ${density === 'Comfortable' ? 'density-comfortable' : 'density-compact'}`}>
         <header className="det-public-topbar">
@@ -1141,10 +1464,52 @@ function AppShell({
                 <div className="truncate text-[11px] text-slate-500">.NET Development Engineering Toolkit</div>
               </div>
             </div>
-            <nav className="hidden items-center gap-6 text-xs font-medium text-slate-400 md:flex" aria-label="Landing navigation">
-              <a href="#analysis" className="transition hover:text-slate-100">Analysis</a>
-              <a href="#evidence" className="transition hover:text-slate-100">Evidence</a>
-              <a href="#architecture" className="transition hover:text-slate-100">Architecture</a>
+            <nav className="det-public-nav" aria-label="Landing navigation">
+              <div className="det-product-menu">
+                <button type="button" className="det-public-nav-link det-product-menu-trigger" aria-haspopup="true">
+                  Product
+                  <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+                </button>
+                <div className="det-product-menu-panel" role="menu">
+                  <a
+                    href="/"
+                    className="det-product-menu-item"
+                    role="menuitem"
+                    onClick={(event) => {
+                      event.preventDefault()
+                      onStartPageChange('Home')
+                    }}
+                  >
+                    <span className="det-product-menu-label">DotDet</span>
+                    <span className="det-product-menu-description">Analyze .NET production readiness</span>
+                  </a>
+                  <a href={SCHEMA_ARCHITECT_URL} className="det-product-menu-item" role="menuitem">
+                    <span className="det-product-menu-label">Schema Architect</span>
+                    <span className="det-product-menu-description">Design schemas and generate .NET foundations</span>
+                  </a>
+                </div>
+              </div>
+              <a
+                href="/docs"
+                className="det-public-nav-link"
+                onClick={(event) => {
+                  event.preventDefault()
+                  onStartPageChange('Docs')
+                }}
+              >
+                Docs
+              </a>
+              <a
+                href="/changelog"
+                className="det-public-nav-link"
+                onClick={(event) => {
+                  event.preventDefault()
+                  onStartPageChange('Changelog')
+                }}
+              >
+                Changelog
+              </a>
+              <a href={DOTDET_REPOSITORY_URL} className="det-public-nav-link">GitHub</a>
             </nav>
             {authLoading ? (
               <span className="text-xs text-slate-500">Checking session</span>
@@ -1158,6 +1523,7 @@ function AppShell({
         <div className="det-public-content">
           {children}
         </div>
+        <PublicFooter onNavigate={onStartPageChange} />
       </main>
     )
   }
@@ -1201,7 +1567,7 @@ function AppShell({
                   aria-label={item.label}
                   title={item.label}
                   onClick={() => onStartPageChange(item.page)}
-                  className={`det-sidebar-nav-item ${startPage === item.page || (authUser && item.page === 'Dashboard' && startPage === 'Analyze') ? 'det-sidebar-nav-item-active' : ''}`}
+                  className={`det-sidebar-nav-item ${startPage === item.page ? 'det-sidebar-nav-item-active' : ''}`}
                 >
                   <item.icon className="h-4 w-4" aria-hidden="true" />
                   <span>{item.label}</span>
@@ -1219,16 +1585,18 @@ function AppShell({
                 </button>
               </>
             ) : null}
-            <button
-              type="button"
-              aria-label="Settings"
-              title="Settings"
-              onClick={onOpenSettings}
-              className={`det-sidebar-nav-item ${(result && activePage === 'Settings') || (!result && startPage === 'Settings') ? 'det-sidebar-nav-item-active' : ''}`}
-            >
-              <Settings className="h-4 w-4" aria-hidden="true" />
-              <span>Settings</span>
-            </button>
+            {result || authUser ? (
+              <button
+                type="button"
+                aria-label="Settings"
+                title="Settings"
+                onClick={onOpenSettings}
+                className={`det-sidebar-nav-item ${(result && activePage === 'Settings') || (!result && startPage === 'Settings') ? 'det-sidebar-nav-item-active' : ''}`}
+              >
+                <Settings className="h-4 w-4" aria-hidden="true" />
+                <span>Settings</span>
+              </button>
+            ) : null}
             {authUser ? (
               <button
                 type="button"
@@ -1353,6 +1721,68 @@ function AppShell({
   )
 }
 
+const landingProofCards = [
+  {
+    icon: FileSearch,
+    title: 'Source-linked evidence',
+    body: 'Findings include project, file, line, detection method, confidence, and remediation context.',
+  },
+  {
+    icon: Braces,
+    title: 'Built for ASP.NET Core',
+    body: 'Rules focus on architecture boundaries, DI reliability, EF Core migrations, security configuration, and API readiness.',
+  },
+  {
+    icon: FileDown,
+    title: 'Professional reports',
+    body: 'Export JSON, Markdown, and standalone HTML reports for engineering review and release readiness.',
+  },
+] as const
+
+const landingCapabilities = [
+  {
+    icon: Blocks,
+    title: 'Architecture boundaries',
+    body: 'Layering, project dependencies, and cross-boundary violations.',
+  },
+  {
+    icon: ServerCog,
+    title: 'Dependency Injection',
+    body: 'Service registration, lifetimes, and unresolved dependencies.',
+  },
+  {
+    icon: Database,
+    title: 'EF Core / migrations',
+    body: 'DbContext setup, migration posture, and data-access readiness.',
+  },
+  {
+    icon: ShieldCheck,
+    title: 'Security & configuration',
+    body: 'Auth middleware, secrets, HTTPS, and configuration hardening.',
+  },
+  {
+    icon: Code2,
+    title: 'API readiness',
+    body: 'Health checks, versioning, OpenAPI, and production endpoints.',
+  },
+  {
+    icon: FolderGit2,
+    title: 'GitHub repository analysis',
+    body: 'Analyze GitHub repositories without cloning locally; private repositories require explicit access.',
+  },
+] as const
+
+const heroBinaryStreams = [
+  '0\n1\n1\n0\n1\n0\n0\n1\n1\n0\n1\n0\n1\n1',
+  '1\n0\n0\n1\n0\n1\n1\n0\n0\n1\n0\n1\n0\n0',
+  '0\n0\n1\n1\n0\n1\n0\n1\n1\n0\n0\n1\n1\n0',
+  '1\n1\n0\n0\n1\n0\n1\n0\n0\n1\n1\n0\n0\n1',
+  '0\n1\n0\n1\n1\n0\n1\n0\n1\n0\n0\n1\n0\n1',
+  '1\n0\n1\n0\n0\n1\n0\n1\n0\n1\n1\n0\n1\n0',
+  '0\n1\n1\n1\n0\n0\n1\n0\n1\n0\n1\n0\n0\n1',
+  '1\n0\n0\n0\n1\n1\n0\n1\n0\n1\n0\n1\n1\n0',
+] as const
+
 function HomePage({
   onAnalyzeSample,
   onLogin,
@@ -1361,56 +1791,434 @@ function HomePage({
   onLogin: () => void
 }) {
   return (
-    <section id="analysis" className="det-public-landing flex flex-1 items-center justify-center overflow-auto p-6">
-      <div className="w-full max-w-6xl">
-        <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_360px] lg:items-center">
-          <div>
-            <div className="text-xs font-semibold uppercase tracking-wide text-[#2596be]">.NET Development Engineering Toolkit</div>
-            <h2 className="mt-4 max-w-4xl text-4xl font-semibold tracking-tight text-slate-950">
-              Production-readiness analysis for serious ASP.NET Core teams.
-            </h2>
-            <p className="mt-4 max-w-2xl text-sm leading-6 text-slate-500">
-              DotDet inspects architecture, dependency injection, EF Core, security configuration, and API readiness, then maps findings back to source code and Microsoft guidance.
+    <section id="product" className="det-public-landing">
+      <div className="det-public-binary-rain" aria-hidden="true">
+        {[...heroBinaryStreams, ...heroBinaryStreams, ...heroBinaryStreams].map((stream, index) => (
+          <span key={index}>{stream}</span>
+        ))}
+      </div>
+      <div className="det-landing-page">
+        <div className="det-landing-hero">
+          <div className="det-landing-copy">
+            <h2 className="det-landing-title">Find production risks in your ASP.NET Core apps before they ship.</h2>
+            <p className="det-landing-subtitle">
+              DotDet analyzes architecture, dependency injection, EF Core, security configuration, and API readiness, then turns the results into source-linked engineering reports.
             </p>
-            <div className="mt-7 flex flex-wrap gap-2">
-              <button type="button" onClick={onLogin} className="det-primary-cta">
-                Login with GitHub
+            <div className="det-landing-actions">
+              <button type="button" onClick={onLogin} className="det-primary-cta det-landing-primary-cta">
+                Get Started
                 <ChevronRight className="h-4 w-4" aria-hidden="true" />
               </button>
-              <button type="button" onClick={onAnalyzeSample} className="det-secondary-cta">
+              <button type="button" onClick={onAnalyzeSample} className="det-secondary-cta det-landing-secondary-cta">
                 Analyze Sample
               </button>
             </div>
-            <div id="evidence" className="mt-8 grid gap-3 sm:grid-cols-3">
-              {[
-                ['Architecture', 'Layer boundaries and project dependencies'],
-                ['Security', 'Configuration, middleware, and auth posture'],
-                ['Code evidence', 'Findings linked to files, lines, and guidance'],
-              ].map(([title, body]) => (
-                <div key={title} className="det-landing-proof">
-                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">{title}</div>
-                  <div className="mt-2 text-sm leading-5 text-slate-300">{body}</div>
-                </div>
-              ))}
-            </div>
+            <p className="det-landing-proof-line">
+              Analyze ZIP uploads, GitHub repositories, or the sample ASP.NET Core project.
+            </p>
           </div>
-          <div id="architecture" className="det-landing-panel">
-            <div className="border-b border-slate-700 px-4 py-3">
-              <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Workbench Preview</div>
-              <div className="mt-1 text-sm font-semibold text-slate-100">What DotDet Checks</div>
-            </div>
-            <ul className="divide-y divide-slate-800">
-              {categoryDefinitions.map((category) => (
-                <li key={category.key} className="flex items-center gap-3 px-4 py-3 text-sm text-slate-300">
-                  <category.icon className={`h-4 w-4 ${categoryTextClass(category.key)}`} aria-hidden="true" />
-                  <span>{category.reportLabel}</span>
-                </li>
-              ))}
-            </ul>
+        </div>
+
+        <div id="docs" className="det-proof-grid">
+          {landingProofCards.map((card) => (
+            <article key={card.title} className="det-proof-card">
+              <div className="det-proof-card-head">
+                <card.icon className="det-proof-card-icon" aria-hidden="true" />
+                <h3 className="det-proof-card-title">{card.title}</h3>
+              </div>
+              <p className="det-proof-card-body">{card.body}</p>
+            </article>
+          ))}
+        </div>
+
+        <section className="det-capability-section" aria-labelledby="landing-capabilities-title">
+          <div className="det-capability-section-heading">
+            <h3 id="landing-capabilities-title" className="det-capability-section-title">
+              What DotDet analyzes
+            </h3>
+          </div>
+          <div className="det-capability-grid">
+            {landingCapabilities.map((capability) => (
+              <article key={capability.title} className="det-capability-card">
+                <div className="det-capability-card-head">
+                  <capability.icon className="det-capability-icon" aria-hidden="true" />
+                  <h4 className="det-capability-card-title">{capability.title}</h4>
+                </div>
+                <p className="det-capability-card-body">{capability.body}</p>
+              </article>
+            ))}
+          </div>
+        </section>
+      </div>
+    </section>
+  )
+}
+
+const docsCheckCategories = [
+  'Architecture boundaries',
+  'Dependency Injection',
+  'EF Core and migrations',
+  'Security and configuration',
+  'API readiness',
+]
+
+const docsAnalysisFlow = [
+  'User submits a ZIP, GitHub repository, or sample project.',
+  'Backend downloads or extracts the project into a temporary folder.',
+  'DotDet discovers .sln, .slnx, and project files.',
+  'Projects are loaded with MSBuildWorkspace where possible.',
+  'If full solution loading is unavailable, DotDet falls back to project-file discovery.',
+  'Roslyn syntax and semantic analysis inspects code symbols, references, and usage patterns.',
+  'Project/config scanners inspect .csproj files, appsettings*.json, migrations, and project references.',
+  'Findings are grouped by root cause.',
+  'Scoring and the engineering assessment are generated.',
+  'JSON is returned to the React dashboard.',
+  'Logged-in users get a sanitized history snapshot.',
+]
+
+function DocsPage() {
+  return (
+    <section className="det-docs-page">
+      <div className="det-docs-shell">
+        <header className="det-docs-header">
+          <div className="det-docs-eyebrow">Documentation</div>
+          <h2>DotDet Documentation</h2>
+          <p>
+            DotDet analyzes ASP.NET Core and .NET solutions and produces a production-readiness report developers can inspect, share, and act on.
+          </p>
+        </header>
+
+        <div className="det-docs-layout">
+          <aside className="det-docs-toc" aria-label="Documentation sections">
+            <a href="#what-dotdet-does">What DotDet does</a>
+            <a href="#checks">What DotDet checks</a>
+            <a href="#analysis-ways">Ways to analyze</a>
+            <a href="#analysis-flow">How analysis works</a>
+            <a href="#project-loading">Project loading</a>
+            <a href="#semantic-analysis">Semantic analysis</a>
+            <a href="#findings-scoring">Findings and scoring</a>
+            <a href="#noise-control">Noise control</a>
+            <a href="#github-analysis">GitHub analysis</a>
+            <a href="#source-preview">Source preview</a>
+            <a href="#exports">Reports and exports</a>
+            <a href="#security-privacy">Security and privacy</a>
+            <a href="#limitations">Current limitations</a>
+            <a href="#developer-notes">Developer notes</a>
+          </aside>
+
+          <div className="det-docs-content">
+            <section id="what-dotdet-does" className="det-docs-section">
+              <h3>What DotDet Does</h3>
+              <p>
+                DotDet reviews a submitted .NET solution and turns production-readiness signals into a structured engineering report. The goal is to help teams find release risks before deployment, not to replace human code review.
+              </p>
+            </section>
+
+            <section id="checks" className="det-docs-section">
+              <h3>What DotDet Checks</h3>
+              <div className="det-docs-card-grid">
+                {docsCheckCategories.map((item) => (
+                  <div key={item} className="det-docs-mini-card">{item}</div>
+                ))}
+              </div>
+            </section>
+
+            <section id="analysis-ways" className="det-docs-section">
+              <h3>Ways To Analyze A Project</h3>
+              <div className="det-docs-two-column">
+                <div>
+                  <h4>Upload ZIP</h4>
+                  <p>Upload a zipped .NET solution or repository snapshot. DotDet extracts it temporarily, analyzes it, then removes temporary files.</p>
+                </div>
+                <div>
+                  <h4>GitHub Repository</h4>
+                  <p>Submit a repository. DotDet downloads the default branch ZIP server-side and reuses the same ZIP safety and analysis path.</p>
+                </div>
+                <div>
+                  <h4>Sample Project</h4>
+                  <p>Run the bundled sample ASP.NET Core project to see findings, Code Explorer, Engineering Guide, and exports immediately.</p>
+                </div>
+                <div>
+                  <h4>Local Path Analysis</h4>
+                  <p>Local path analysis is intended for development builds where the backend can access the same filesystem as the submitted path.</p>
+                </div>
+              </div>
+            </section>
+
+            <section id="analysis-flow" className="det-docs-section">
+              <h3>How Analysis Works</h3>
+              <ol className="det-docs-steps">
+                {docsAnalysisFlow.map((step) => (
+                  <li key={step}>{step}</li>
+                ))}
+              </ol>
+            </section>
+
+            <section id="project-loading" className="det-docs-section">
+              <h3>Project Loading And Discovery</h3>
+              <p>
+                DotDet starts by finding the solution boundary. It prefers `.sln` and `.slnx` files, then resolves SDK-style projects, project references, package references, and shared build configuration such as `Directory.Build.props` and `Directory.Build.targets` where the local MSBuild environment allows it.
+              </p>
+              <p>
+                When `MSBuildWorkspace` can load the solution, analyzers get stronger project metadata and Roslyn compilations. When a real-world solution cannot be loaded fully, DotDet falls back to project-file discovery so the report can still return useful findings instead of failing the whole analysis.
+              </p>
+              <div className="det-docs-code-block">
+                <span>Preferred path: solution file {'->'} MSBuildWorkspace {'->'} Roslyn compilation {'->'} semantic analyzers</span>
+                <span>Fallback path: project discovery {'->'} project/reference scanners {'->'} reduced-fidelity findings</span>
+                <span>Project graph: normalized project references plus discovered dependency edges</span>
+              </div>
+            </section>
+
+            <section id="semantic-analysis" className="det-docs-section">
+              <h3>Roslyn Semantic Analysis</h3>
+              <p>
+                DotDet uses Roslyn syntax and semantic models where practical. Semantic checks inspect symbols, inheritance, interface implementations, constructor parameters, extension method calls, attributes, referenced assemblies, and project-to-project references.
+              </p>
+              <div className="det-docs-two-column">
+                <div>
+                  <h4>High-confidence signals</h4>
+                  <p>Examples include a type inheriting from `DbContext`, a controller discovered by ASP.NET Core symbols, an explicit project reference, or a middleware call resolved from startup code.</p>
+                </div>
+                <div>
+                  <h4>Lower-confidence signals</h4>
+                  <p>Examples include naming conventions, partial configuration patterns, or registrations that are inferred from usage when full semantic loading is unavailable.</p>
+                </div>
+              </div>
+            </section>
+
+            <section id="findings-scoring" className="det-docs-section">
+              <h3>Findings, Evidence, And Scoring</h3>
+              <p>
+                Each finding is designed to explain why it exists. Reports can include rule ID, severity, confidence, detection method, file and line, evidence, production impact, recommendation, examples, and Microsoft documentation links.
+              </p>
+              <p>
+                Scoring is category-weighted instead of a raw count of findings. Security, API readiness, EF Core, Dependency Injection, and Architecture each contribute to the final production-readiness score, while confirmed critical blockers can cap the grade.
+              </p>
+              <div className="det-docs-stack">
+                <span>High confidence: proven by semantic analysis or explicit project configuration</span>
+                <span>Medium confidence: strongly inferred through syntax or usage patterns</span>
+                <span>Low confidence: heuristic or best-effort and generally less severe</span>
+              </div>
+            </section>
+
+            <section id="noise-control" className="det-docs-section">
+              <h3>Noise Control And Suppressions</h3>
+              <p>
+                DotDet favors fewer, clearer findings over a long analyzer dump. It groups repeated findings by root cause, excludes test projects from deployment-readiness scoring by default, and applies API production rules only to real ASP.NET Core entry-point projects.
+              </p>
+              <p>
+                Findings can be marked as Open, Ignore, False Positive, or Accepted Risk. Repository-level suppressions are designed to be stored in `dotdet.suppressions.json` so teams can document risk decisions without deleting analyzer evidence.
+              </p>
+            </section>
+
+            <section id="github-analysis" className="det-docs-section">
+              <h3>GitHub Repository Analysis</h3>
+              <p>
+                Public repositories are supported by default. Private repositories require explicit repository access, and DotDet keeps the token server-side while reusing the same ZIP safety validation and analysis path.
+              </p>
+            </section>
+
+            <section id="source-preview" className="det-docs-section">
+              <h3>Live Source Preview Vs Saved Reports</h3>
+              <p>
+                Live analysis can show source preview in Code Explorer so developers can jump from a finding to the affected file. Saved history snapshots intentionally do not store raw source code; they preserve findings, scores, evidence, and exports without retaining full repository contents.
+              </p>
+            </section>
+
+            <section id="exports" className="det-docs-section">
+              <h3>Reports And Exports</h3>
+              <div className="det-docs-code-block">
+                <span>Dashboard workbench</span>
+                <span>HTML report for team review or print-to-PDF</span>
+                <span>Markdown report for GitHub issues, PR notes, and READMEs</span>
+                <span>JSON export for machine-readable details</span>
+                <span>Saved reports/history for logged-in users</span>
+              </div>
+            </section>
+
+            <section id="security-privacy" className="det-docs-section">
+              <h3>Security And Privacy</h3>
+              <ul className="det-docs-bullets">
+                <li>DotDet does not execute analyzed code.</li>
+                <li>Temporary extraction folders are deleted after analysis.</li>
+                <li>Uploaded ZIPs and downloaded GitHub archives are not stored.</li>
+                <li>Raw source code is not stored in saved history snapshots.</li>
+                <li>Private repository tokens are protected server-side and are never sent to React or stored in report history.</li>
+              </ul>
+            </section>
+
+            <section id="limitations" className="det-docs-section">
+              <h3>Current Limitations</h3>
+              <p>
+                Some analyzer behavior is still heuristic. Dependency Injection registrations, API/Web project intent, and architecture layer inference are being refined to reduce false positives. Private GitHub repositories, PR comments, checks, and webhooks are not implemented yet.
+              </p>
+            </section>
+
+            <section id="developer-notes" className="det-docs-section">
+              <h3>Developer Notes</h3>
+              <div className="det-docs-stack">
+                <span>Backend: ASP.NET Core / .NET</span>
+                <span>Frontend: React / Vite / TypeScript</span>
+                <span>Analyzer: Roslyn / MSBuildWorkspace</span>
+                <span>Exports: JSON / Markdown / HTML</span>
+                <span>History: sanitized snapshots</span>
+              </div>
+              <a href={DOTDET_REPOSITORY_URL} className="det-docs-github-link">
+                View project on GitHub
+                <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+              </a>
+            </section>
           </div>
         </div>
       </div>
     </section>
+  )
+}
+
+const changelogSections = [
+  {
+    title: 'Analysis engine',
+    items: [
+      'Roslyn/MSBuild-backed solution analysis',
+      '.sln and .slnx loading where available',
+      'fallback project discovery',
+      'architecture, DI, EF Core, security/configuration, and API readiness analyzers',
+    ],
+  },
+  {
+    title: 'Findings and guidance',
+    items: [
+      'source-linked findings',
+      'severity, confidence, and detection method',
+      'remediation guidance with good and bad examples',
+      'Microsoft documentation links',
+      'root-cause grouping and noise reduction',
+    ],
+  },
+  {
+    title: 'Reports and exports',
+    items: [
+      'interactive dashboard/workbench',
+      'Code Explorer for live results',
+      'Engineering Guide',
+      'JSON export',
+      'Markdown export',
+      'standalone HTML report export',
+    ],
+  },
+  {
+    title: 'GitHub and uploads',
+    items: [
+      'ZIP upload analysis',
+      'GitHub repository analysis',
+      'default branch analysis',
+      'live source preview for current GitHub analysis',
+      'sanitized saved history snapshots',
+    ],
+  },
+  {
+    title: 'Workspace',
+    items: [
+      'GitHub login',
+      'Dashboard, Analyze, Reports/history, Rules, and Settings pages',
+      'finding dispositions: Open, Ignore, False Positive, Accepted Risk',
+    ],
+  },
+  {
+    title: 'Known limitations',
+    items: [
+      'private GitHub repositories are not supported yet',
+      'branch selection is not supported yet',
+      'no PR comments, checks, or webhooks yet',
+      'historical reports do not store full source preview',
+      'API/Web UI project classification is still being refined',
+      'local JSON persistence is MVP-oriented',
+    ],
+  },
+]
+
+function ContactPage() {
+  return (
+    <section className="det-docs-page">
+      <div className="det-docs-shell det-simple-public-shell">
+        <header className="det-docs-header">
+          <div className="det-docs-eyebrow">Contact</div>
+          <h2>Contact DotDet</h2>
+          <p>For questions, feedback, or collaboration, contact Cezar Pedroso.</p>
+        </header>
+
+        <div className="det-contact-grid">
+          <article className="det-contact-card">
+            <div className="det-contact-card-label">Email</div>
+            <h3>Direct contact</h3>
+            <p>Use email for collaboration, product questions, or general feedback.</p>
+            <a href="mailto:cezarapedroso@gmail.com">cezarapedroso@gmail.com</a>
+          </article>
+
+          <article className="det-contact-card">
+            <div className="det-contact-card-label">GitHub Issues</div>
+            <h3>Bugs and feature requests</h3>
+            <p>For bugs, feature requests, or analyzer false positives, open a GitHub issue.</p>
+            <a href={DOTDET_ISSUES_URL}>
+              Open GitHub Issues
+              <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+            </a>
+          </article>
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function ChangelogPage() {
+  return (
+    <section className="det-docs-page">
+      <div className="det-docs-shell">
+        <header className="det-docs-header">
+          <div className="det-docs-eyebrow">Changelog</div>
+          <h2>v0.1 Preview</h2>
+          <p>Initial DotDet MVP focused on production-readiness analysis for ASP.NET Core applications.</p>
+        </header>
+
+        <div className="det-changelog-timeline">
+          {changelogSections.map((section) => (
+            <article key={section.title} className="det-changelog-item">
+              <h3>{section.title}</h3>
+              <ul className="det-docs-bullets">
+                {section.items.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </article>
+          ))}
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function PublicFooter({ onNavigate }: { onNavigate: (page: StartPage) => void }) {
+  const navigate = (event: ReactMouseEvent<HTMLAnchorElement>, page: StartPage) => {
+    event.preventDefault()
+    onNavigate(page)
+  }
+
+  return (
+    <footer className="det-public-footer">
+      <div className="det-public-footer-inner">
+        <div>
+          <div className="det-public-footer-brand">DotDet</div>
+          <p>Production-readiness analysis for ASP.NET Core applications.</p>
+        </div>
+        <nav aria-label="Footer navigation">
+          <a href="/docs" onClick={(event) => navigate(event, 'Docs')}>Docs</a>
+          <a href="/changelog" onClick={(event) => navigate(event, 'Changelog')}>Changelog</a>
+          <a href="/contact" onClick={(event) => navigate(event, 'Contact')}>Contact</a>
+          <a href={DOTDET_REPOSITORY_URL}>GitHub</a>
+          <a href={DOTDET_ISSUES_URL}>Issues</a>
+        </nav>
+      </div>
+    </footer>
   )
 }
 
@@ -1426,97 +2234,664 @@ function AuthLoadingPage() {
 
 function DashboardPage({
   authUser,
-  canAnalyze,
-  error,
+  history,
+  historyError,
+  historyLoading,
   isLoading,
-  mode,
   onAnalyzeSample,
-  onFileChange,
-  onModeChange,
-  onSubmit,
-  zipFile,
+  onExportHistory,
+  onOpenAnalyze,
+  onOpenHistory,
+  onRerunHistory,
 }: {
   authUser: AuthUser | null
-  canAnalyze: boolean
-  error: string | null
+  history: AnalysisHistorySummary[]
+  historyError: string | null
+  historyLoading: boolean
   isLoading: boolean
-  mode: AnalysisMode
   onAnalyzeSample: () => void
-  onFileChange: (event: ChangeEvent<HTMLInputElement>) => void
-  onModeChange: (mode: AnalysisMode) => void
-  onSubmit: (event: FormEvent<HTMLFormElement>) => void
-  zipFile: File | null
+  onExportHistory: (id: string, format: ExportFormat) => void
+  onOpenAnalyze: (tab: AnalyzeTab) => void
+  onOpenHistory: (id: string) => void
+  onRerunHistory: (id: string) => void
 }) {
   const displayName = authUser?.displayName || authUser?.githubUsername || 'Developer'
+  const latest = history[0]
+  const totalOpenFindings = history.reduce((sum, item) => sum + item.openFindingCount, 0)
+  const recentReports = history.slice(0, 5)
 
   return (
     <section className="det-dashboard-page flex-1 overflow-auto p-5">
       <div className="det-auth-workspace mx-auto">
         <header className="det-overview-title">
-          <div className="text-xs font-semibold uppercase tracking-wide text-[#2596be]">Solution Analysis</div>
+          <div className="text-xs font-semibold uppercase tracking-wide text-[#2ea043]">Dashboard</div>
           <h1 className="mt-2 text-2xl font-semibold text-slate-950">Welcome, {displayName}</h1>
           <p className="mt-2 max-w-2xl text-sm text-slate-500">
-            Upload a zipped .NET solution to generate a production-readiness report.
+            Start a new analysis or reopen a previous production-readiness report.
           </p>
         </header>
 
-        <form onSubmit={onSubmit} className="det-auth-upload-panel">
-          <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_260px]">
-            <div>
-              <div className="mb-3 flex items-center gap-2">
-                <UploadCloud className="h-4 w-4 text-[#2596be]" aria-hidden="true" />
-                <h2 className="text-base font-semibold text-slate-950">Upload Solution ZIP</h2>
+        <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+          <section className="det-auth-upload-panel mt-0">
+            <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 pb-3">
+              <div>
+                <h2 className="text-base font-semibold text-slate-950">Workspace Summary</h2>
+                <p className="mt-1 text-xs text-slate-500">Saved analyses for your GitHub account.</p>
               </div>
-              <div className="mb-3 border border-slate-200 bg-white p-2 text-xs leading-5 text-slate-600">
-                Browser-based analysis uses ZIP upload. Include the `.sln` or `.slnx` file and related projects in the archive.
-              </div>
-              <label className="det-upload-dropzone">
-                <FileArchive className="mb-2 h-7 w-7 text-[#2596be]" aria-hidden="true" />
-                <span className="text-sm font-semibold text-slate-900">{zipFile?.name ?? 'Choose .zip solution archive'}</span>
-                <span className="mt-1 text-xs text-slate-500">DotDet extracts the archive temporarily and returns the report directly.</span>
-                <input type="file" accept=".zip" onChange={onFileChange} className="sr-only" />
-              </label>
-
-              {isLoading ? <AnalysisProgress /> : null}
-
-              {error ? (
-                <div className="mt-3 flex items-start gap-2 border border-rose-200 bg-rose-50 p-2.5 text-sm text-rose-800">
-                  <XCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-                  <p className="break-words">{error}</p>
-                </div>
-              ) : null}
+              <button type="button" onClick={() => onOpenAnalyze('Upload ZIP')} className="det-run-analysis-button h-8">
+                <FolderSearch className="h-4 w-4" aria-hidden="true" />
+                New Analysis
+              </button>
             </div>
 
-            <aside className="det-auth-side-panel">
-              <button type="button" onClick={() => onModeChange('zip')} className={analysisActionClass(mode === 'zip')}>
-                <UploadCloud className="h-5 w-5 text-[#2596be]" aria-hidden="true" />
-                <span className="font-semibold text-slate-950">ZIP upload</span>
-                <span className="text-xs leading-5 text-slate-500">Analyze an exported solution archive.</span>
+            <dl className="mt-4 grid gap-4 sm:grid-cols-4">
+              <CompactMetric label="Total Analyses" value={history.length} tone="neutral" />
+              <CompactMetric label="Latest Score" value={latest ? latest.score : '-'} tone={latest && latest.score >= 85 ? 'ok' : latest ? 'warn' : 'neutral'} />
+              <CompactMetric label="Open Findings" value={totalOpenFindings} tone={totalOpenFindings > 0 ? 'danger' : 'ok'} />
+              <CompactMetric label="Last Analysis" value={latest ? formatHistoryDate(latest.completedAt) : '-'} tone="neutral" />
+            </dl>
+
+            <div className="mt-5 grid gap-3 md:grid-cols-3">
+              <button type="button" onClick={() => onOpenAnalyze('GitHub Repository')} className={analysisActionClass(false)}>
+                <FolderGit2 className="h-5 w-5 text-[#2ea043]" aria-hidden="true" />
+                <span className="font-semibold text-slate-950">Analyze GitHub Repository</span>
+                <span className="text-xs leading-5 text-slate-500">Analyze public repositories, or enable private repository access when needed.</span>
+              </button>
+              <button type="button" onClick={() => onOpenAnalyze('Upload ZIP')} className={analysisActionClass(false)}>
+                <UploadCloud className="h-5 w-5 text-[#2ea043]" aria-hidden="true" />
+                <span className="font-semibold text-slate-950">Upload ZIP</span>
+                <span className="text-xs leading-5 text-slate-500">Analyze a zipped .NET solution.</span>
               </button>
               <button type="button" onClick={onAnalyzeSample} disabled={isLoading} className={analysisActionClass(false)}>
-                <FileCode2 className="h-5 w-5 text-[#2596be]" aria-hidden="true" />
-                <span className="font-semibold text-slate-950">Analyze sample</span>
-                <span className="text-xs leading-5 text-slate-500">Open the included DotDet sample.</span>
+                <FileCode2 className="h-5 w-5 text-[#2ea043]" aria-hidden="true" />
+                <span className="font-semibold text-slate-950">Analyze Sample Project</span>
+                <span className="text-xs leading-5 text-slate-500">Open the included ASP.NET Core sample.</span>
               </button>
-            </aside>
-          </div>
+            </div>
+          </section>
 
-          <div className="mt-4 flex justify-end border-t border-slate-200 pt-4">
-            <button type="submit" disabled={!canAnalyze || isLoading} className="det-run-analysis-button">
-              <Play className="h-4 w-4" aria-hidden="true" />
-              Run Analysis
+          <aside className="det-auth-side-panel">
+            <h2 className="text-sm font-semibold text-slate-950">Connected GitHub Account</h2>
+            <div className="mt-2 flex items-center gap-3 border border-slate-200 bg-white p-3">
+              {authUser?.avatarUrl ? (
+                <img src={authUser.avatarUrl} alt="" className="h-10 w-10" />
+              ) : (
+                <Circle className="h-10 w-10 text-slate-500" aria-hidden="true" />
+              )}
+              <div className="min-w-0">
+                <div className="truncate text-sm font-semibold text-slate-950">{displayName}</div>
+                <div className="truncate text-xs text-slate-500">@{authUser?.githubUsername}</div>
+              </div>
+            </div>
+            <p className="mt-3 text-xs leading-5 text-slate-500">
+              Report history is scoped to this authenticated GitHub user. Repository cloning is not enabled until secure token storage is added.
+            </p>
+          </aside>
+        </div>
+
+        <section className="det-auth-upload-panel">
+          <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 pb-3">
+            <div>
+              <h2 className="text-base font-semibold text-slate-950">Recent Analyses</h2>
+              <p className="mt-1 text-xs text-slate-500">Open or export saved report snapshots.</p>
+            </div>
+            <button type="button" onClick={() => onOpenAnalyze('Upload ZIP')} className="det-card-link-button">
+              Open Analyze
             </button>
           </div>
-        </form>
+
+          {historyError ? <InlineError message={historyError} /> : null}
+          {historyLoading ? <p className="mt-4 text-sm text-slate-500">Loading reports...</p> : null}
+
+          {!historyLoading && recentReports.length === 0 ? (
+            <EmptyState
+              title="No reports yet"
+              body="Start by analyzing a sample project or uploading a zipped .NET solution."
+              actionLabel="Analyze a solution"
+              onAction={() => onOpenAnalyze('Upload ZIP')}
+            />
+          ) : (
+            <HistoryList
+              compact
+              history={recentReports}
+              isLoading={isLoading}
+              onExport={onExportHistory}
+              onRerun={onRerunHistory}
+              onView={onOpenHistory}
+            />
+          )}
+        </section>
       </div>
     </section>
   )
 }
 
 function analysisActionClass(active: boolean) {
-  return `flex min-h-28 flex-col items-start gap-1.5 border p-3 text-left transition hover:border-teal-500 hover:bg-slate-50 ${
+  return `flex min-h-24 flex-col items-start gap-1.5 border p-3 text-left transition hover:border-[#2ea043] hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60 ${
     active ? 'border-teal-600 bg-slate-50' : 'border-slate-200 bg-white'
   }`
+}
+
+function AnalyzePage({
+  activeTab,
+  canAnalyze,
+  error,
+  isLoading,
+  onActiveTabChange,
+  onAnalyzeGitHubRepository,
+  onAnalyzeSample,
+  onClearCachedAnalysisState,
+  onFileChange,
+  onSubmit,
+  zipFile,
+}: {
+  activeTab: AnalyzeTab
+  canAnalyze: boolean
+  error: string | null
+  isLoading: boolean
+  onActiveTabChange: (tab: AnalyzeTab) => void
+  onAnalyzeGitHubRepository: (repositoryInput: string) => Promise<void>
+  onAnalyzeSample: () => void
+  onClearCachedAnalysisState: () => void
+  onFileChange: (event: ChangeEvent<HTMLInputElement>) => void
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void
+  zipFile: File | null
+}) {
+  const [repoState, setRepoState] = useState<GitHubRepositoryListingResponse | null>(null)
+  const [repoError, setRepoError] = useState<string | null>(null)
+  const [repoSearch, setRepoSearch] = useState('')
+  const [manualRepository, setManualRepository] = useState('')
+  const [manualRepositoryError, setManualRepositoryError] = useState<string | null>(null)
+  const [repositoryAccessUpdating, setRepositoryAccessUpdating] = useState(false)
+  const tabs: AnalyzeTab[] = ['GitHub Repository', 'Upload ZIP', 'Sample Project']
+  const repositories = repoState?.repositories ?? []
+  const privateAccessEnabled = repoState?.privateAccessEnabled ?? false
+  const filteredRepositories = repositories.filter((repo) =>
+    `${repo.owner}/${repo.name} ${repo.description ?? ''}`.toLowerCase().includes(repoSearch.trim().toLowerCase()),
+  )
+
+  useEffect(() => {
+    if (activeTab !== 'GitHub Repository' || repoState || repoError) {
+      return
+    }
+
+    let cancelled = false
+    fetch(`${API_BASE_URL}/api/github/repos`, { credentials: 'include' })
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(`Repository request failed with HTTP ${response.status}`)
+        }
+
+        return response.json() as Promise<GitHubRepositoryListingResponse>
+      })
+      .then((payload) => {
+        if (!cancelled) {
+          setRepoState(payload)
+        }
+      })
+      .catch((caughtError) => {
+        if (!cancelled) {
+          setRepoError(caughtError instanceof Error ? caughtError.message : 'Repository access is not available yet.')
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeTab, repoError, repoState])
+
+  function enablePrivateRepositoryAccess() {
+    window.location.href = `${API_BASE_URL}/api/auth/github-repo-access-login`
+  }
+
+  async function disconnectPrivateRepositoryAccess() {
+    setRepositoryAccessUpdating(true)
+    setRepoError(null)
+    onClearCachedAnalysisState()
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/auth/repository-access`, {
+        credentials: 'include',
+        method: 'DELETE',
+      })
+      if (!response.ok) {
+        throw new Error(`Repository access disconnect failed with HTTP ${response.status}`)
+      }
+
+      setRepoState(null)
+      onClearCachedAnalysisState()
+    } catch (caughtError) {
+      setRepoError(caughtError instanceof Error ? caughtError.message : 'Private repository access could not be disconnected.')
+    } finally {
+      setRepositoryAccessUpdating(false)
+    }
+  }
+
+  return (
+    <section className="det-dashboard-page flex-1 overflow-auto p-5">
+      <div className="det-auth-workspace mx-auto">
+        <header className="det-overview-title">
+          <div className="text-xs font-semibold uppercase tracking-wide text-[#2ea043]">Analyze</div>
+          <h1 className="mt-2 text-2xl font-semibold text-slate-950">Analyze a .NET solution</h1>
+          <p className="mt-2 max-w-3xl text-sm text-slate-500">
+            Run DotDet against a GitHub repository, uploaded ZIP, or sample ASP.NET Core project.
+          </p>
+        </header>
+
+        <div className="mt-5 flex flex-wrap gap-1 border-b border-slate-200">
+          {tabs.map((tab) => (
+            <button
+              key={tab}
+              type="button"
+              onClick={() => onActiveTabChange(tab)}
+              className={`px-3 py-2 text-xs font-semibold transition ${
+                activeTab === tab ? 'border-b-2 border-[#2ea043] text-slate-950' : 'text-slate-500 hover:text-slate-200'
+              }`}
+            >
+              {tab}
+            </button>
+          ))}
+        </div>
+
+        {activeTab === 'GitHub Repository' ? (
+          <section className="det-auth-upload-panel">
+            <div className="flex items-start gap-3">
+              <FolderGit2 className="mt-0.5 h-5 w-5 text-[#2ea043]" aria-hidden="true" />
+              <div>
+                <h2 className="text-base font-semibold text-slate-950">Analyze GitHub Repository</h2>
+                <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">
+                  Analyze the default branch of a GitHub repository. Private repositories require explicit repository access.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+              <div>
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-950">Repositories</h3>
+                    <p className="mt-1 text-xs text-slate-500">
+                      {repoError ?? repoState?.message ?? 'Checking repository listing...'}
+                    </p>
+                  </div>
+                  <label className="relative">
+                    <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" aria-hidden="true" />
+                    <input
+                      value={repoSearch}
+                      onChange={(event) => setRepoSearch(event.target.value)}
+                      placeholder="Search repositories"
+                      className="h-8 w-64 border border-slate-300 bg-white pl-7 pr-2 text-xs text-slate-900 outline-none focus:border-[#2ea043]"
+                    />
+                  </label>
+                </div>
+
+                {repoState?.enabled && filteredRepositories.length > 0 ? (
+                  <div className="mt-3 grid gap-2">
+                    {filteredRepositories.map((repo) => (
+                      <div key={`${repo.owner}/${repo.name}`} className="flex items-center justify-between gap-3 border border-slate-200 bg-white p-3">
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-semibold text-slate-950">{repo.owner}/{repo.name}</div>
+                          <div className="mt-0.5 text-xs text-slate-500">
+                            {repo.visibility ?? 'Public'} - default branch {repo.defaultBranch ?? 'unknown'}
+                            {repo.updatedAt ? ` - updated ${formatHistoryDate(repo.updatedAt)}` : ''}
+                          </div>
+                          {repo.description ? <p className="mt-1 line-clamp-2 text-xs leading-5 text-slate-500">{repo.description}</p> : null}
+                        </div>
+                        <button
+                          type="button"
+                          disabled={isLoading}
+                          onClick={() => onAnalyzeGitHubRepository(`${repo.owner}/${repo.name}`)}
+                          className="det-run-analysis-button h-8 shrink-0 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          Analyze default branch
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="mt-3 border border-slate-200 bg-white p-4 text-sm text-slate-500">
+                    {repoState?.enabled
+                      ? 'No repositories found. Paste a GitHub repository URL to analyze it.'
+                      : repoState?.reason ?? repoError ?? 'Repository listing is unavailable. Paste a GitHub repository URL to analyze it.'}
+                  </div>
+                )}
+              </div>
+
+              <aside className="grid gap-3">
+                <form
+                  className="border border-slate-200 bg-white p-3"
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    if (!isValidGitHubRepositoryInput(manualRepository)) {
+                      setManualRepositoryError('Enter a valid GitHub repository URL or owner/repo.')
+                      return
+                    }
+
+                    setManualRepositoryError(null)
+                    void onAnalyzeGitHubRepository(manualRepository)
+                  }}
+                >
+                  <h3 className="text-sm font-semibold text-slate-950">Analyze by URL</h3>
+                  <p className="mt-1 text-xs leading-5 text-slate-500">
+                    Paste a GitHub repository URL or owner/repo.
+                  </p>
+                  <input
+                    value={manualRepository}
+                    onChange={(event) => {
+                      setManualRepository(event.target.value)
+                      setManualRepositoryError(null)
+                    }}
+                    placeholder="github.com/owner/repo"
+                    className="mt-3 h-9 w-full border border-slate-300 bg-white px-2 text-sm text-slate-900 outline-none focus:border-[#2ea043]"
+                  />
+                  {manualRepositoryError ? <p className="mt-2 text-xs text-red-700">{manualRepositoryError}</p> : null}
+                  {error ? <InlineError message={error} /> : null}
+                  {isLoading ? <AnalysisProgress /> : null}
+                  <button type="submit" disabled={isLoading || !manualRepository.trim()} className="det-run-analysis-button mt-3 h-8 w-full disabled:cursor-not-allowed disabled:opacity-60">
+                    Analyze repository
+                  </button>
+                </form>
+
+                <div className="border border-slate-200 bg-white p-3">
+                  <h3 className="text-sm font-semibold text-slate-950">Private repositories</h3>
+                  <p className="mt-1 text-xs leading-5 text-slate-500">
+                    {privateAccessEnabled
+                      ? repoState?.privateAccessMessage ?? 'Private repository access is enabled for this GitHub account.'
+                      : repoState?.privateAccessMessage ?? 'DotDet requests repository read permission only when private analysis is enabled.'}
+                  </p>
+                  {privateAccessEnabled ? (
+                    <button
+                      type="button"
+                      disabled={repositoryAccessUpdating}
+                      onClick={disconnectPrivateRepositoryAccess}
+                      className="det-secondary-cta mt-3 h-8 w-full disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      Disconnect private access
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={repositoryAccessUpdating}
+                      onClick={enablePrivateRepositoryAccess}
+                      className="det-run-analysis-button mt-3 h-8 w-full disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      Enable private access
+                    </button>
+                  )}
+                </div>
+              </aside>
+            </div>
+          </section>
+        ) : null}
+
+        {activeTab === 'Upload ZIP' ? (
+          <form onSubmit={onSubmit} className="det-auth-upload-panel">
+            <div className="mb-3 flex items-center gap-2">
+              <UploadCloud className="h-4 w-4 text-[#2ea043]" aria-hidden="true" />
+              <h2 className="text-base font-semibold text-slate-950">Upload ZIP</h2>
+            </div>
+            <p className="mb-4 max-w-3xl text-sm leading-6 text-slate-500">
+              Upload a zipped solution. DotDet analyzes project structure, architecture, DI, EF Core, security configuration, and API readiness without executing your application code.
+            </p>
+            <label className="det-upload-dropzone">
+              <FileArchive className="mb-2 h-7 w-7 text-[#2ea043]" aria-hidden="true" />
+              <span className="text-sm font-semibold text-slate-900">{zipFile?.name ?? 'Choose .zip solution archive'}</span>
+              <span className="mt-1 text-xs text-slate-500">Accepted file type: .zip. Maximum upload size: 250 MB.</span>
+              <input type="file" accept=".zip" onChange={onFileChange} className="sr-only" />
+            </label>
+
+            {isLoading ? <AnalysisProgress /> : null}
+            {error ? <InlineError message={error} /> : null}
+
+            <div className="mt-4 flex justify-end border-t border-slate-200 pt-4">
+              <button type="submit" disabled={!canAnalyze || isLoading} className="det-run-analysis-button">
+                <Play className="h-4 w-4" aria-hidden="true" />
+                Run Analysis
+              </button>
+            </div>
+          </form>
+        ) : null}
+
+        {activeTab === 'Sample Project' ? (
+          <section className="det-auth-upload-panel">
+            <div className="flex items-start gap-3">
+              <FileCode2 className="mt-0.5 h-5 w-5 text-[#2ea043]" aria-hidden="true" />
+              <div>
+                <h2 className="text-base font-semibold text-slate-950">Sample Project</h2>
+                <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">
+                  Analyze the bundled ASP.NET Core sample to preview DotDet findings, source navigation, and report exports.
+                </p>
+              </div>
+            </div>
+
+            {isLoading ? <AnalysisProgress /> : null}
+            {error ? <InlineError message={error} /> : null}
+
+            <div className="mt-5">
+              <button type="button" onClick={onAnalyzeSample} disabled={isLoading} className="det-run-analysis-button">
+                <Play className="h-4 w-4" aria-hidden="true" />
+                Analyze Sample Project
+              </button>
+            </div>
+          </section>
+        ) : null}
+      </div>
+    </section>
+  )
+}
+
+function ReportsPage({
+  history,
+  historyError,
+  historyLoading,
+  isLoading,
+  onDelete,
+  onExport,
+  onOpenAnalyze,
+  onRefresh,
+  onRerun,
+  onView,
+}: {
+  history: AnalysisHistorySummary[]
+  historyError: string | null
+  historyLoading: boolean
+  isLoading: boolean
+  onDelete: (id: string) => void
+  onExport: (id: string, format: ExportFormat) => void
+  onOpenAnalyze: (tab: AnalyzeTab) => void
+  onRefresh: () => void
+  onRerun: (id: string) => void
+  onView: (id: string) => void
+}) {
+  const [query, setQuery] = useState('')
+  const [sourceFilter, setSourceFilter] = useState<'All' | AnalysisSourceType>('All')
+  const normalizedQuery = query.trim().toLowerCase()
+  const filteredHistory = history.filter((item) => {
+    const matchesSource = sourceFilter === 'All' || item.sourceType === sourceFilter
+    const matchesQuery =
+      !normalizedQuery
+      || [item.solutionName, item.sourceLabel, item.status, formatSourceType(item.sourceType)]
+        .join(' ')
+        .toLowerCase()
+        .includes(normalizedQuery)
+
+    return matchesSource && matchesQuery
+  })
+
+  return (
+    <section className="det-dashboard-page flex-1 overflow-auto p-5">
+      <div className="det-auth-workspace mx-auto">
+        <header className="det-overview-title">
+          <div className="text-xs font-semibold uppercase tracking-wide text-[#2ea043]">Reports</div>
+          <h1 className="mt-2 text-2xl font-semibold text-slate-950">Analysis history</h1>
+          <p className="mt-2 max-w-3xl text-sm text-slate-500">
+            View previous report snapshots, export them, or re-run sample analyses.
+          </p>
+        </header>
+
+        <section className="det-auth-upload-panel">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="relative">
+                <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" aria-hidden="true" />
+                <input
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder="Search reports"
+                  className="h-8 min-w-64 border border-slate-300 bg-white pl-7 pr-2 text-xs text-slate-900 outline-none focus:border-[#2ea043]"
+                />
+              </label>
+              <select
+                value={sourceFilter}
+                onChange={(event) => setSourceFilter(event.target.value as 'All' | AnalysisSourceType)}
+                className="h-8 border border-slate-300 bg-white px-2 text-xs text-slate-900 outline-none focus:border-[#2ea043]"
+              >
+                <option value="All">All sources</option>
+                <option value="GitHubRepo">GitHub</option>
+                <option value="ZipUpload">Upload ZIP</option>
+                <option value="SampleProject">Sample</option>
+                <option value="LocalDevPath">LocalDev</option>
+              </select>
+            </div>
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={onRefresh} className="det-card-link-button">
+                Refresh
+              </button>
+              <button type="button" onClick={() => onOpenAnalyze('Upload ZIP')} className="det-run-analysis-button h-8">
+                New Analysis
+              </button>
+            </div>
+          </div>
+
+          {historyError ? <InlineError message={historyError} /> : null}
+          {historyLoading ? <p className="mt-4 text-sm text-slate-500">Loading reports...</p> : null}
+
+          {!historyLoading && filteredHistory.length === 0 ? (
+            <EmptyState
+              title="No reports yet"
+              body="No reports yet. Start by analyzing a sample project or uploading a zipped .NET solution."
+              actionLabel="Analyze a solution"
+              onAction={() => onOpenAnalyze('Upload ZIP')}
+            />
+          ) : (
+            <HistoryList
+              history={filteredHistory}
+              isLoading={isLoading}
+              onDelete={onDelete}
+              onExport={onExport}
+              onRerun={onRerun}
+              onView={onView}
+            />
+          )}
+        </section>
+      </div>
+    </section>
+  )
+}
+
+function HistoryList({
+  compact = false,
+  history,
+  isLoading,
+  onDelete,
+  onExport,
+  onRerun,
+  onView,
+}: {
+  compact?: boolean
+  history: AnalysisHistorySummary[]
+  isLoading: boolean
+  onDelete?: (id: string) => void
+  onExport: (id: string, format: ExportFormat) => void
+  onRerun: (id: string) => void
+  onView: (id: string) => void
+}) {
+  return (
+    <div className="mt-4 overflow-hidden border border-slate-200 bg-white">
+      <table className="min-w-full text-left text-xs">
+        <thead className="border-b border-slate-200 text-[11px] uppercase tracking-wide text-slate-500">
+          <tr>
+            <th className="px-3 py-2 font-semibold">Project</th>
+            <th className="px-3 py-2 font-semibold">Source</th>
+            {!compact ? <th className="px-3 py-2 font-semibold">Score</th> : null}
+            <th className="px-3 py-2 font-semibold">Findings</th>
+            <th className="px-3 py-2 font-semibold">Analyzed</th>
+            <th className="px-3 py-2 text-right font-semibold">Actions</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-200">
+          {history.map((item) => (
+            <tr key={item.id}>
+              <td className="px-3 py-2">
+                <div className="font-semibold text-slate-950">{item.solutionName}</div>
+                <div className="mt-0.5 truncate text-slate-500">{item.sourceLabel}</div>
+              </td>
+              <td className="px-3 py-2 text-slate-600">{formatSourceType(item.sourceType)}</td>
+              {!compact ? (
+                <td className="px-3 py-2">
+                  <span className="font-semibold text-slate-950">{item.score}/100</span>
+                  <span className="ml-2 text-slate-500">{item.grade}</span>
+                  <div className="text-slate-500">{item.status}</div>
+                </td>
+              ) : null}
+              <td className="px-3 py-2 text-slate-600">{item.openFindingCount} open / {item.totalFindingCount} total</td>
+              <td className="px-3 py-2 text-slate-600">{formatHistoryDate(item.completedAt)}</td>
+              <td className="px-3 py-2">
+                <div className="flex flex-wrap justify-end gap-1">
+                  <button type="button" onClick={() => onView(item.id)} className="det-card-link-button">View</button>
+                  <button type="button" onClick={() => onExport(item.id, 'HTML')} className="det-card-link-button">HTML</button>
+                  {!compact ? (
+                    <>
+                      <button type="button" onClick={() => onExport(item.id, 'Markdown')} className="det-card-link-button">MD</button>
+                      <button type="button" onClick={() => onExport(item.id, 'JSON')} className="det-card-link-button">JSON</button>
+                    </>
+                  ) : null}
+                  {item.canRerun ? (
+                    <button type="button" onClick={() => onRerun(item.id)} disabled={isLoading} className="det-card-link-button disabled:cursor-not-allowed disabled:opacity-60">
+                      Re-run
+                    </button>
+                  ) : null}
+                  {onDelete ? (
+                    <button type="button" onClick={() => onDelete(item.id)} className="det-card-link-button">Delete</button>
+                  ) : null}
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function EmptyState({
+  actionLabel,
+  body,
+  onAction,
+  title,
+}: {
+  actionLabel: string
+  body: string
+  onAction: () => void
+  title: string
+}) {
+  return (
+    <div className="mt-4 border border-slate-200 bg-white p-5">
+      <h3 className="text-sm font-semibold text-slate-950">{title}</h3>
+      <p className="mt-2 max-w-2xl text-sm text-slate-500">{body}</p>
+      <button type="button" onClick={onAction} className="det-run-analysis-button mt-4 h-8">
+        {actionLabel}
+      </button>
+    </div>
+  )
+}
+
+function InlineError({ message }: { message: string }) {
+  return (
+    <div className="mt-3 flex items-start gap-2 border border-rose-200 bg-rose-50 p-2.5 text-sm text-rose-800">
+      <XCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+      <p className="break-words">{message}</p>
+    </div>
+  )
 }
 
 function AnalysisProgress() {
@@ -1543,7 +2918,7 @@ function AnalysisProgress() {
               {status === 'completed' ? (
                 <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-500" aria-hidden="true" />
               ) : status === 'current' ? (
-                <Circle className="det-progress-current h-3.5 w-3.5 shrink-0 fill-cyan-500 text-cyan-500" aria-hidden="true" />
+                <Circle className="det-progress-current h-3.5 w-3.5 shrink-0 fill-emerald-500 text-emerald-500" aria-hidden="true" />
               ) : (
                 <Circle className="h-3.5 w-3.5 shrink-0 text-slate-500" aria-hidden="true" />
               )}
@@ -2605,6 +3980,7 @@ function CodeExplorerPage({
           selectedIssue={selectedIssue}
           showGutterMarkers={showGutterMarkers}
           showMinimapMarkers={showMinimapMarkers}
+          sourcePreviewUnavailableReason={getSourcePreviewUnavailableReason(result)}
         />
       </main>
 
@@ -2656,9 +4032,11 @@ function CodeSolutionExplorer({
   result: AnalysisResult
   selectedFileId: string | null
 }) {
-  const [expandedProjects, setExpandedProjects] = useState(() => new Set(projects.map((project) => project.name)))
-  const [showAllFiles, setShowAllFiles] = useState(false)
+  const [expandedProjects, setExpandedProjects] = useState(() => new Set([...projects.map((project) => project.name), 'Solution']))
+  const [showAllFiles, setShowAllFiles] = useState(() => result.sourcePreviewAvailable !== false)
+  const sourcePreviewUnavailableReason = getSourcePreviewUnavailableReason(result)
   const filesByProject = groupFilesByProject(files)
+  const explorerProjects = getCodeExplorerProjects(projects, filesByProject)
   const issuesByFile = result.issues.reduce((groups, issue) => {
     const fileId = getFileId(issue.filePath)
     if (!fileId) return groups
@@ -2668,9 +4046,11 @@ function CodeSolutionExplorer({
     groups.set(fileId, group)
     return groups
   }, new Map<string, AnalysisIssue[]>())
-  const visibleProjects = showAllFiles
-    ? projects
-    : projects.filter((project) => (projectIssueCounts.get(project.name) ?? 0) > 0)
+  const visibleProjects = sourcePreviewUnavailableReason
+    ? []
+    : showAllFiles
+      ? explorerProjects
+      : explorerProjects.filter((project) => hasProjectFileFindings(project.name, filesByProject, issuesByFile))
 
   function toggleProject(projectName: string) {
     setExpandedProjects((current) => {
@@ -2765,7 +4145,9 @@ function CodeSolutionExplorer({
           )
         })}
         {visibleProjects.length === 0 ? (
-          <p className="p-2 text-xs text-slate-500">No files with findings. Turn on Show all to browse the solution.</p>
+          <p className="p-2 text-xs leading-5 text-slate-500">
+            {sourcePreviewUnavailableReason ?? 'No files with findings. Turn on Show all to browse the source tree.'}
+          </p>
         ) : null}
       </div>
     </aside>
@@ -2780,6 +4162,7 @@ function SourceViewer({
   selectedIssue,
   showGutterMarkers,
   showMinimapMarkers,
+  sourcePreviewUnavailableReason,
 }: {
   editorFontFamily: EditorFontFamily
   file: CodeFile | null
@@ -2788,11 +4171,19 @@ function SourceViewer({
   selectedIssue: AnalysisIssue | null
   showGutterMarkers: boolean
   showMinimapMarkers: boolean
+  sourcePreviewUnavailableReason?: string
 }) {
   if (!file) {
     return (
-      <div className="flex flex-1 items-center justify-center bg-slate-950 text-sm text-slate-400">
-        Select a file to inspect source findings.
+      <div className="flex flex-1 items-center justify-center bg-slate-950 px-8 text-sm text-slate-400">
+        <div className="max-w-xl text-center">
+          <p className="font-medium text-slate-200">
+            {sourcePreviewUnavailableReason ? 'Source preview unavailable' : 'Select a file to inspect source findings.'}
+          </p>
+          {sourcePreviewUnavailableReason ? (
+            <p className="mt-2 leading-6 text-slate-400">{sourcePreviewUnavailableReason}</p>
+          ) : null}
+        </div>
       </div>
     )
   }
@@ -2928,7 +4319,13 @@ function SourceViewer({
           lineDecorationsWidth: 14,
           lineHeight: 17,
           lineNumbers: 'on',
-          minimap: showMinimapMarkers ? { enabled: true, scale: 0.85, showSlider: 'mouseover' } : { enabled: false },
+          minimap: {
+            enabled: true,
+            renderCharacters: false,
+            scale: 0.85,
+            showSlider: 'mouseover',
+            size: 'proportional',
+          },
           padding: { bottom: 4, top: 4 },
           readOnly: true,
           renderLineHighlight: 'all',
@@ -2946,7 +4343,7 @@ function SourceViewer({
   )
 }
 
-function CompactMetric({ label, tone, value }: { label: string; tone: 'danger' | 'warn' | 'ok' | 'neutral'; value: number }) {
+function CompactMetric({ label, tone, value }: { label: string; tone: 'danger' | 'warn' | 'ok' | 'neutral'; value: number | string }) {
   const toneClass = {
     danger: 'text-red-700',
     warn: 'text-amber-700',
@@ -3268,6 +4665,19 @@ function EngineeringGuidePanel({
           <DetailBlock title="Why .DET Detected It">
             <p className="text-xs leading-5 text-slate-700">{getDetectionReason(issue)}</p>
           </DetailBlock>
+
+          {issue.evidence?.length ? (
+            <DetailBlock title="Evidence">
+              <ul className="space-y-1 text-xs leading-5 text-slate-700">
+                {issue.evidence.map((item, index) => (
+                  <li key={`${item.label}-${item.filePath ?? ''}-${item.lineNumber ?? index}`}>
+                    <span className="font-semibold text-slate-900">{item.label}</span>
+                    <span className="text-slate-500"> - {item.detail}</span>
+                  </li>
+                ))}
+              </ul>
+            </DetailBlock>
+          ) : null}
 
           <DetailBlock title="Location">
             <dl className="space-y-1 text-xs">
@@ -3794,6 +5204,11 @@ function buildCodeFiles(result: AnalysisResult) {
     })
   }
 
+  if (result.sourcePreviewAvailable === false) {
+    return [...files.values()]
+      .sort((left, right) => left.projectName.localeCompare(right.projectName) || left.name.localeCompare(right.name))
+  }
+
   for (const issue of result.issues) {
     if (!issue.filePath) {
       continue
@@ -3816,6 +5231,13 @@ function buildCodeFiles(result: AnalysisResult) {
     .sort((left, right) => left.projectName.localeCompare(right.projectName) || left.name.localeCompare(right.name))
 }
 
+function getSourcePreviewUnavailableReason(result: AnalysisResult) {
+  return result.sourcePreviewAvailable === false
+    ? result.sourcePreviewUnavailableReason
+      ?? 'Source preview is not available for this analysis result.'
+    : undefined
+}
+
 function getUnavailableSourceMessage(filePath: string) {
   return [
     '// Source content was not included in this analysis response.',
@@ -3831,6 +5253,34 @@ function groupFilesByProject(files: CodeFile[]) {
     groups.set(file.projectName, group)
     return groups
   }, new Map<string, CodeFile[]>())
+}
+
+function getCodeExplorerProjects(projects: ProjectNode[], filesByProject: Map<string, CodeFile[]>) {
+  const existingProjectNames = new Set(projects.map((project) => project.name))
+  const virtualProjects = [...filesByProject.keys()]
+    .filter((projectName) => !existingProjectNames.has(projectName))
+    .sort((left, right) => {
+      if (left === 'Solution') return -1
+      if (right === 'Solution') return 1
+      return left.localeCompare(right)
+    })
+    .map((projectName) => ({
+      filePath: projectName,
+      isAspNetCoreEntryPoint: false,
+      isTestProject: false,
+      logicalLayer: projectName === 'Solution' ? 'Solution' : undefined,
+      name: projectName,
+    }))
+
+  return [...virtualProjects, ...projects]
+}
+
+function hasProjectFileFindings(
+  projectName: string,
+  filesByProject: Map<string, CodeFile[]>,
+  issuesByFile: Map<string, AnalysisIssue[]>,
+) {
+  return (filesByProject.get(projectName) ?? []).some((file) => (issuesByFile.get(file.id)?.length ?? 0) > 0)
 }
 
 function getHighestSeverity(issues: AnalysisIssue[]) {
@@ -3907,8 +5357,13 @@ function getStartPageFromPath(hasStoredResult: boolean): StartPage {
   }
 
   const path = window.location.pathname.toLowerCase()
+  if (path.startsWith('/docs')) return 'Docs'
+  if (path.startsWith('/contact')) return 'Contact'
+  if (path.startsWith('/changelog')) return 'Changelog'
   if (path.startsWith('/dashboard')) return 'Dashboard'
   if (path.startsWith('/analyze')) return 'Analyze'
+  if (path.startsWith('/reports')) return 'Reports'
+  if (path.startsWith('/rules')) return 'Rules'
   if (path.startsWith('/settings')) return 'Settings'
   return 'Home'
 }
@@ -3916,10 +5371,50 @@ function getStartPageFromPath(hasStoredResult: boolean): StartPage {
 function getPathForStartPage(page: StartPage) {
   return {
     Analyze: '/analyze',
+    Changelog: '/changelog',
+    Contact: '/contact',
     Dashboard: '/dashboard',
+    Docs: '/docs',
     Home: '/',
+    Reports: '/reports',
+    Rules: '/rules',
     Settings: '/settings',
   }[page]
+}
+
+function formatSourceType(sourceType: AnalysisSourceType) {
+  return {
+    GitHubRepo: 'GitHub',
+    LocalDevPath: 'LocalDev',
+    SampleProject: 'Sample',
+    ZipUpload: 'Upload ZIP',
+  }[sourceType]
+}
+
+function formatHistoryDate(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return '-'
+  }
+
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+function isValidGitHubRepositoryInput(value: string) {
+  const input = value.trim()
+  if (!input || /\s/.test(input)) {
+    return false
+  }
+
+  const normalized = input
+    .replace(/^https?:\/\/github\.com\//i, '')
+    .replace(/^github\.com\//i, '')
+    .replace(/\.git$/i, '')
+    .replace(/^\/|\/$/g, '')
+  const parts = normalized.split('/')
+  return parts.length === 2
+    && /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/.test(parts[0])
+    && /^[A-Za-z0-9._-]{1,100}$/.test(parts[1])
 }
 
 function navigateToPath(path: string, replace = false) {
@@ -3942,11 +5437,99 @@ function loadStoredAnalysisResult() {
 
   try {
     const parsed = JSON.parse(stored) as AnalysisResult
-    return parsed?.solutionName && Array.isArray(parsed.issues) && parsed.projectGraph ? parsed : null
+    if (!parsed?.solutionName || !Array.isArray(parsed.issues) || !parsed.projectGraph) {
+      return null
+    }
+
+    const sanitized = sanitizeAnalysisResultForBrowserStorage(parsed)
+    safeSetLocalStorage(lastAnalysisResultStorageKey, JSON.stringify(sanitized))
+    return sanitized
   } catch {
     localStorage.removeItem(lastAnalysisResultStorageKey)
     return null
   }
+}
+
+function clearCachedAnalysisState() {
+  [
+    lastAnalysisResultStorageKey,
+    lastAnalysisSolutionPathStorageKey,
+    selectedIssueStorageKey,
+    selectedFileStorageKey,
+  ].forEach((key) => localStorage.removeItem(key))
+}
+
+function sanitizeAnalysisResultForBrowserStorage(result: AnalysisResult): AnalysisResult {
+  return stripSourceBearingAnalysisFields(result, browserStorageSourcePreviewUnavailableReason)
+}
+
+function sanitizeAnalysisResultForExport(result: AnalysisResult): AnalysisResult {
+  return stripSourceBearingAnalysisFields(result, exportSourcePreviewUnavailableReason)
+}
+
+function stripSourceBearingAnalysisFields(result: AnalysisResult, unavailableReason: string): AnalysisResult {
+  const resultWithOptionalSourcePreview = result as AnalysisResult & { sourcePreview?: unknown }
+  const {
+    sourceFiles: _sourceFiles,
+    sourcePreview: _sourcePreview,
+    solutionPath: _solutionPath,
+    repositoryRoot: _repositoryRoot,
+    suppressionFilePath: _suppressionFilePath,
+    ...safeResult
+  } = resultWithOptionalSourcePreview
+
+  return {
+    ...safeResult,
+    sourcePreviewAvailable: false,
+    sourcePreviewUnavailableReason: unavailableReason,
+    issues: result.issues.map(sanitizeIssuePaths),
+    projectGraph: sanitizeProjectGraphPaths(result.projectGraph),
+    architectureMap: result.architectureMap ? sanitizeArchitectureMapPaths(result.architectureMap) : undefined,
+  }
+}
+
+function sanitizeIssuePaths(issue: AnalysisIssue): AnalysisIssue {
+  return {
+    ...issue,
+    filePath: sanitizePathForBrowserPersistence(issue.filePath),
+    evidence: issue.evidence?.map((item) => ({
+      ...item,
+      filePath: sanitizePathForBrowserPersistence(item.filePath),
+    })),
+  }
+}
+
+function sanitizeProjectGraphPaths(projectGraph: ProjectGraph): ProjectGraph {
+  return {
+    ...projectGraph,
+    projects: projectGraph.projects.map((project) => ({
+      ...project,
+      filePath: sanitizePathForBrowserPersistence(project.filePath) ?? project.filePath,
+    })),
+  }
+}
+
+function sanitizeArchitectureMapPaths(architectureMap: ArchitectureMap): ArchitectureMap {
+  return {
+    ...architectureMap,
+    projects: architectureMap.projects.map((project) => ({
+      ...project,
+      filePath: sanitizePathForBrowserPersistence(project.filePath) ?? project.filePath,
+    })),
+  }
+}
+
+function sanitizePathForBrowserPersistence(path?: string) {
+  if (!path) {
+    return path
+  }
+
+  const normalized = path.replace(/\\/g, '/')
+  if (/^[A-Za-z]:\//.test(normalized) || normalized.startsWith('/') || normalized.startsWith('//')) {
+    return normalized.split('/').filter(Boolean).at(-1) ?? undefined
+  }
+
+  return normalized
 }
 
 function safeSetLocalStorage(key: string, value: string) {
@@ -4078,7 +5661,9 @@ function getOverviewNarrative(result: AnalysisResult, counts: Record<Severity, n
   const blockerCount = counts.Critical + counts.Error
 
   if (blockerCount > 0) {
-    return `This solution needs review before production hardening. .DET found ${blockerCount} high-severity findings, with risk concentrated in ${getPrimaryConcerns(result).join(', ').toLowerCase()}.`
+    const concerns = getPrimaryConcerns(result)
+    const concernText = concerns.length > 0 ? concerns.join(', ').toLowerCase() : 'active findings'
+    return `This solution needs review before production hardening. .DET found ${blockerCount} high-severity findings, with risk concentrated in ${concernText}.`
   }
 
   if (counts.Warning > 0) {
@@ -4103,9 +5688,11 @@ function getOverviewLead(counts: Record<Severity, number>) {
 }
 
 function getRiskAreas(result: AnalysisResult) {
-  return categoryDefinitions
+  const areas = categoryDefinitions
     .map((category) => {
-      const issues = result.issues.filter((issue) => issue.category === category.key)
+      const issues = result.issues
+        .filter((issue) => issue.category === category.key)
+        .filter(isRiskSummaryIssue)
       const criticalCount = issues.filter((issue) => issue.severity === 'Critical' || issue.severity === 'Error').length
 
       return {
@@ -4115,13 +5702,20 @@ function getRiskAreas(result: AnalysisResult) {
         score: result.categoryScores[category.scoreKey],
       }
     })
+
+  const riskAreas = areas.filter((area) => area.criticalCount > 0 || area.issueCount > 0 || area.score < 100)
+  const actionableRiskAreas = riskAreas.filter((area) => area.criticalCount > 0 || area.issueCount > 0)
+
+  return (actionableRiskAreas.length > 0 ? actionableRiskAreas : riskAreas)
     .sort((left, right) => left.score - right.score || right.criticalCount - left.criticalCount)
 }
 
 function getPrimaryConcerns(result: AnalysisResult) {
-  return categoryDefinitions
+  const concerns = categoryDefinitions
     .map((category) => {
-      const issues = result.issues.filter((issue) => issue.category === category.key)
+      const issues = result.issues
+        .filter((issue) => issue.category === category.key)
+        .filter(isRiskSummaryIssue)
       const criticalCount = issues.filter((issue) => issue.severity === 'Critical' || issue.severity === 'Error').length
 
       return {
@@ -4130,9 +5724,17 @@ function getPrimaryConcerns(result: AnalysisResult) {
         weight: criticalCount * 20 + issues.length * 3 + (100 - result.categoryScores[category.scoreKey]),
       }
     })
+
+  const activeConcerns = concerns.filter((area) => area.weight > 0 && area.score < 100)
+
+  return activeConcerns
     .sort((left, right) => right.weight - left.weight || left.score - right.score)
     .slice(0, 3)
     .map((area) => area.label)
+}
+
+function isRiskSummaryIssue(issue: AnalysisIssue) {
+  return issue.severity !== 'Info' && (issue.confidence ?? 'Medium') !== 'Low'
 }
 
 function getConcernLabel(category: Category) {
@@ -4147,7 +5749,7 @@ function getConcernLabel(category: Category) {
 
 function getScoreBarClass(score: number) {
   if (score >= 85) return 'h-full bg-teal-600'
-  if (score >= 70) return 'h-full bg-sky-600'
+  if (score >= 70) return 'h-full bg-emerald-600'
   if (score >= 50) return 'h-full bg-amber-500'
   return 'h-full bg-rose-600'
 }
@@ -4170,7 +5772,7 @@ function getGroupedRecommendedActions(issues: AnalysisIssue[]): RecommendedActio
     (candidate.severity === 'Critical' || candidate.severity === 'Error' || candidate.severity === 'Warning')
     && (!candidate.suppression || candidate.suppression.isExpired)
   )) {
-    const key = `${getRuleId(issue)}|${issue.category}`
+    const key = getRootCauseKey(issue)
     const existing = grouped.get(key)
 
     if (!existing) {
@@ -4183,7 +5785,7 @@ function getGroupedRecommendedActions(issues: AnalysisIssue[]): RecommendedActio
     const representative = issueRank > existingRank ? issue : existing
     const projectNames = new Set(
       issues
-        .filter((candidate) => `${getRuleId(candidate)}|${candidate.category}` === key)
+        .filter((candidate) => getRootCauseKey(candidate) === key)
         .map((candidate) => candidate.projectName)
         .filter(Boolean) as string[],
     )
@@ -4259,6 +5861,11 @@ function getRuleId(issue: AnalysisIssue) {
   return `${prefix}${numeric.slice(-3)}`
 }
 
+function getRootCauseKey(issue: AnalysisIssue) {
+  return issue.rootCauseKey
+    ?? `${getRuleId(issue)}|${issue.category}|${issue.projectName ?? 'Solution'}|${issue.filePath ?? ''}|${issue.title}`
+}
+
 function getHighestRiskActiveRuleId(rules: RuleDocumentation[], issues: AnalysisIssue[]) {
   if (rules.length === 0 || issues.length === 0) {
     return null
@@ -4301,7 +5908,9 @@ function exportReport(
     return
   }
 
-  const sourcePreview = options.includeSourcePreview
+  const sanitizedResult = sanitizeAnalysisResultForExport(result)
+  const canIncludeSourcePreview = options.includeSourcePreview && !isLiveRepositoryAnalysisResult(result)
+  const sourcePreview = canIncludeSourcePreview
     ? options.codeFiles.map((file) => ({
         content: file.content,
         name: file.name,
@@ -4315,7 +5924,7 @@ function exportReport(
       ? createMarkdownReport(result, options.dispositions)
       : options.format === 'HTML'
         ? createHtmlReport(result, options.dispositions)
-        : JSON.stringify(sourcePreview ? { ...result, findingDispositions: options.dispositions, sourcePreview } : { ...result, findingDispositions: options.dispositions }, null, 2)
+        : JSON.stringify(sourcePreview ? { ...sanitizedResult, findingDispositions: options.dispositions, sourcePreview } : { ...sanitizedResult, findingDispositions: options.dispositions }, null, 2)
   const blob = new Blob([content], { type: options.format === 'Markdown' ? 'text/markdown' : options.format === 'HTML' ? 'text/html' : 'application/json' })
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
@@ -4325,35 +5934,42 @@ function exportReport(
   URL.revokeObjectURL(url)
 }
 
+function isLiveRepositoryAnalysisResult(result: AnalysisResult) {
+  return !result.isHistoricalSnapshot
+    && !result.solutionPath
+    && !result.repositoryRoot
+    && (result.sourceFiles?.length ?? 0) > 0
+}
+
 function getReportFileName(solutionName: string) {
   const slug = solutionName.replace(/[^a-z0-9.-]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase()
   return `${slug || 'dotdet'}-dotdet-report`
 }
 
 function createMarkdownReport(result: AnalysisResult, dispositions: Record<string, FindingDisposition>) {
-  const counts = getSeverityCounts(result.issues)
   const openIssues = getOpenFindings(result, dispositions)
   const suppressedIssues = getSuppressedFindings(result, dispositions)
   const openCounts = getSeverityCounts(openIssues)
+  const activeResult = rebuildAnalysisResultForActiveFindings(result, openIssues)
   const topRisks = getTopRiskIssues(openIssues).slice(0, 8)
-  const roadmap = buildRecommendedRoadmap({ ...result, issues: openIssues }, openCounts)
+  const roadmap = buildRecommendedRoadmap(activeResult, openCounts)
   const lines = [
     '# DotDet Production Readiness Report',
     '',
     `**Solution:** ${result.solutionName}`,
     `**Analyzed:** ${new Date(result.analyzedAt).toLocaleString()}`,
-    `**Production Readiness:** ${result.overallScore}/100 (${getGrade(result.overallScore)})`,
-    `**Status:** ${getReadinessDecision(result.overallScore, counts)}`,
+    `**Production Readiness:** ${activeResult.overallScore}/100 (${getGrade(activeResult.overallScore)})`,
+    `**Status:** ${getReadinessDecision(activeResult.overallScore, openCounts)}`,
     '',
     '## Executive Summary',
     '',
-    result.engineeringAssessment?.overallProductionReadiness ?? getOverviewNarrative(result, counts),
+    activeResult.engineeringAssessment?.overallProductionReadiness ?? getOverviewNarrative(activeResult, openCounts),
     '',
-    `**Score explanation:** ${result.engineeringAssessment?.scoreExplanation ?? 'DotDet calculated the readiness score from weighted category scores and severity caps.'}`,
+    `**Score explanation:** ${activeResult.engineeringAssessment?.scoreExplanation ?? 'DotDet calculated the readiness score from weighted category scores and severity caps.'}`,
     '',
     '## Category Scores',
     '',
-    ...categoryDefinitions.map((category) => `- **${category.reportLabel}:** ${result.categoryScores[category.scoreKey]}/100`),
+    ...categoryDefinitions.map((category) => `- **${category.reportLabel}:** ${activeResult.categoryScores[category.scoreKey]}/100`),
     '',
     '## Top Open Risks',
     '',
@@ -4367,7 +5983,7 @@ function createMarkdownReport(result: AnalysisResult, dispositions: Record<strin
     '',
     '## Engineering Assessment',
     '',
-    ...getAssessmentMarkdownLines(result.engineeringAssessment),
+    ...getAssessmentMarkdownLines(activeResult.engineeringAssessment),
     '',
     '## Architecture And Project Graph',
     '',
@@ -4453,6 +6069,8 @@ function appendFindingMarkdown(
     '',
   )
 
+  appendEvidenceMarkdown(lines, issue)
+
   if (!options.concise) {
     lines.push(`**Suggested implementation:** ${issue.suggestedImplementation ?? issue.recommendation}`, '')
     if (suggestedSnippet && suggestedSnippet.length <= 1600) {
@@ -4475,25 +6093,38 @@ function appendFindingMarkdown(
   }
 }
 
+function appendEvidenceMarkdown(lines: string[], issue: AnalysisIssue) {
+  if (!issue.evidence?.length) {
+    return
+  }
+
+  lines.push('**Evidence:**')
+  for (const item of issue.evidence) {
+    const location = item.filePath ? ` (${formatPath(item.filePath)}${item.lineNumber ? `:${item.lineNumber}` : ''})` : ''
+    lines.push(`- ${item.label}: ${item.detail}${location}`)
+  }
+  lines.push('')
+}
+
 function createHtmlReport(
   result: AnalysisResult,
   dispositions: Record<string, FindingDisposition>,
 ) {
-  const counts = getSeverityCounts(result.issues)
   const openIssues = getOpenFindings(result, dispositions)
   const suppressedIssues = getSuppressedFindings(result, dispositions)
   const openCounts = getSeverityCounts(openIssues)
-  const status = getReadinessDecision(result.overallScore, counts)
-  const grade = getGrade(result.overallScore)
-  const concerns = getPrimaryConcerns(result)
+  const activeResult = rebuildAnalysisResultForActiveFindings(result, openIssues)
+  const status = getReadinessDecision(activeResult.overallScore, openCounts)
+  const grade = getGrade(activeResult.overallScore)
+  const concerns = getPrimaryConcerns(activeResult)
   const topRisks = getTopRiskIssues(openIssues).slice(0, 8)
   const groupedFindings = categoryDefinitions.map((category) => ({
     category,
     issues: openIssues.filter((issue) => issue.category === category.key),
-    score: result.categoryScores[category.scoreKey],
+    score: activeResult.categoryScores[category.scoreKey],
   }))
   const architectureMap = result.architectureMap ?? buildFallbackArchitectureMap(result.projectGraph, result.issues)
-  const roadmap = buildRecommendedRoadmap({ ...result, issues: openIssues }, openCounts)
+  const roadmap = buildRecommendedRoadmap(activeResult, openCounts)
   const ruleExplanations = getUniqueRuleExplanations(result.issues)
   const generatedAt = new Date().toLocaleString()
 
@@ -4652,10 +6283,10 @@ function createHtmlReport(
           </div>
         </div>
         <h1>Production Readiness Report</h1>
-        <p class="cover-summary">${escapeHtml(result.engineeringAssessment?.overallProductionReadiness ?? getOverviewNarrative(result, counts))}</p>
+        <p class="cover-summary">${escapeHtml(activeResult.engineeringAssessment?.overallProductionReadiness ?? getOverviewNarrative(activeResult, openCounts))}</p>
         <div class="cover-grid">
           ${coverMetricHtml('Solution', result.solutionName)}
-          ${coverMetricHtml('Score', `${result.overallScore}/100`)}
+          ${coverMetricHtml('Score', `${activeResult.overallScore}/100`)}
           ${coverMetricHtml('Grade', grade)}
           ${coverMetricHtml('Status', status)}
         </div>
@@ -4676,12 +6307,12 @@ function createHtmlReport(
           <div class="panel">
             <h3>Production Readiness Score</h3>
             <div class="score-row">
-              <div class="score-number">${result.overallScore}<small>/100</small></div>
+              <div class="score-number">${activeResult.overallScore}<small>/100</small></div>
               <div>
                 <div class="muted">Grade ${escapeHtml(grade)} · ${escapeHtml(status)}</div>
-                <div class="bar" aria-hidden="true"><span style="width:${Math.max(0, Math.min(100, result.overallScore))}%"></span></div>
-                <p>${escapeHtml(getOverviewNarrative(result, counts))}</p>
-                <p><strong>Score explanation:</strong> ${escapeHtml(result.engineeringAssessment?.scoreExplanation ?? 'DotDet calculated the readiness score from weighted category scores and severity caps.')}</p>
+                <div class="bar" aria-hidden="true"><span style="width:${Math.max(0, Math.min(100, activeResult.overallScore))}%"></span></div>
+                <p>${escapeHtml(getOverviewNarrative(activeResult, openCounts))}</p>
+                <p><strong>Score explanation:</strong> ${escapeHtml(activeResult.engineeringAssessment?.scoreExplanation ?? 'DotDet calculated the readiness score from weighted category scores and severity caps.')}</p>
               </div>
             </div>
           </div>
@@ -4695,13 +6326,13 @@ function createHtmlReport(
       <section>
         <h2>Category Scores</h2>
         <div class="grid grid-5">
-          ${categoryDefinitions.map((category) => categoryScoreHtml(category.reportLabel, result.categoryScores[category.scoreKey], openIssues.filter((issue) => issue.category === category.key).length)).join('')}
+          ${categoryDefinitions.map((category) => categoryScoreHtml(category.reportLabel, activeResult.categoryScores[category.scoreKey], openIssues.filter((issue) => issue.category === category.key).length)).join('')}
         </div>
       </section>
 
       <section>
         <h2>Engineering Assessment Summary</h2>
-        ${assessmentHtml(result.engineeringAssessment)}
+        ${assessmentHtml(activeResult.engineeringAssessment)}
       </section>
 
       <section>
@@ -4767,6 +6398,101 @@ function getOpenFindings(result: AnalysisResult, dispositions: Record<string, Fi
 
 function getSuppressedFindings(result: AnalysisResult, dispositions: Record<string, FindingDisposition>) {
   return result.issues.filter((issue) => getFindingDisposition(result.solutionName, issue, dispositions) !== 'Open')
+}
+
+function rebuildAnalysisResultForActiveFindings(result: AnalysisResult, activeIssues: AnalysisIssue[]): AnalysisResult {
+  const categoryScores = calculateCategoryScores(activeIssues)
+  const overallScore = calculateOverallScore(categoryScores, activeIssues)
+
+  return {
+    ...result,
+    categoryScores,
+    overallScore,
+    issues: activeIssues,
+    engineeringAssessment: result.engineeringAssessment
+      ? {
+          ...result.engineeringAssessment,
+          highestRisks: getRiskAreas({ ...result, issues: activeIssues, categoryScores, overallScore })
+            .slice(0, 3)
+            .map((area) =>
+              area.criticalCount > 0
+                ? `${area.category.reportLabel}: ${area.criticalCount} critical/error findings and score ${area.score}/100.`
+                : `${area.category.reportLabel}: score ${area.score}/100 with ${area.issueCount} findings to review.`,
+            ),
+          recommendedPriorities: buildRecommendedRoadmap(
+            { ...result, issues: activeIssues, categoryScores, overallScore, engineeringAssessment: undefined },
+            getSeverityCounts(activeIssues),
+          ),
+        }
+      : result.engineeringAssessment,
+  }
+}
+
+function calculateCategoryScores(issues: AnalysisIssue[]): CategoryScores {
+  return {
+    architecture: calculateScoreForIssues(issues.filter((issue) => issue.category === 'Architecture')),
+    dependencyInjection: calculateScoreForIssues(issues.filter((issue) => issue.category === 'DependencyInjection')),
+    efCore: calculateScoreForIssues(issues.filter((issue) => issue.category === 'EfCore')),
+    security: calculateScoreForIssues(issues.filter((issue) => issue.category === 'Security')),
+    apiReadiness: calculateScoreForIssues(issues.filter((issue) => issue.category === 'ApiReadiness')),
+  }
+}
+
+function calculateOverallScore(scores: CategoryScores, issues: AnalysisIssue[]) {
+  const weightedScore = Math.round(
+    (scores.security * 0.25)
+      + (scores.apiReadiness * 0.20)
+      + (scores.efCore * 0.20)
+      + (scores.dependencyInjection * 0.20)
+      + (scores.architecture * 0.15),
+  )
+
+  return Math.min(weightedScore, getCriticalScoreCap(issues))
+}
+
+function calculateScoreForIssues(issues: AnalysisIssue[]) {
+  const groups = new Map<string, number[]>()
+
+  for (const issue of issues) {
+    const key = getRootCauseKey(issue)
+    groups.set(key, [...(groups.get(key) ?? []), getFindingPenalty(issue)])
+  }
+
+  const penalty = [...groups.values()].reduce((total, penalties) => {
+    const ordered = [...penalties].sort((left, right) => right - left)
+    const basePenalty = ordered[0] ?? 0
+    const repeatPenalty = ordered
+      .slice(1)
+      .reduce((subtotal, value) => subtotal + Math.max(1, Math.floor(value / 3)), 0)
+
+    return total + basePenalty + Math.min(repeatPenalty, basePenalty)
+  }, 0)
+
+  return Math.max(0, 100 - penalty)
+}
+
+function getCriticalScoreCap(issues: AnalysisIssue[]) {
+  const activeCriticalRoots = new Set(
+    issues
+      .filter((issue) => issue.severity === 'Critical')
+      .map(getRootCauseKey),
+  )
+
+  if (activeCriticalRoots.size === 0) return 100
+  if (activeCriticalRoots.size <= 3) return 82
+  if (activeCriticalRoots.size <= 8) return 68
+  return 49
+}
+
+function getFindingPenalty(issue: AnalysisIssue) {
+  const severityPenalty = {
+    Critical: 15,
+    Error: 8,
+    Warning: 4,
+    Info: 1,
+  }[issue.severity]
+
+  return issue.confidence === 'Low' ? Math.min(severityPenalty, 1) : severityPenalty
 }
 
 function coverMetricHtml(label: string, value: string | number) {
@@ -4860,7 +6586,7 @@ function findingsCategoryHtml(
     return `
       <tr class="${disposition !== 'Open' ? 'suppressed' : ''}">
         <td>${severityBadgeHtml(issue.severity)} ${disposition !== 'Open' ? `<span class="badge status-suppressed">${escapeHtml(disposition)}</span>` : ''}</td>
-        <td><strong>${escapeHtml(getRuleId(issue))}</strong><br />${escapeHtml(issue.title)}<br /><span class="muted">${escapeHtml(issue.problemSummary ?? issue.description)}</span>${snippet ? `<pre><code>${escapeHtml(snippet)}</code></pre>` : ''}</td>
+        <td><strong>${escapeHtml(getRuleId(issue))}</strong><br />${escapeHtml(issue.title)}<br /><span class="muted">${escapeHtml(issue.problemSummary ?? issue.description)}</span>${evidenceListHtml(issue)}${snippet ? `<pre><code>${escapeHtml(snippet)}</code></pre>` : ''}</td>
         <td>${escapeHtml(issue.projectName ?? 'Solution')}<br /><span class="muted">${escapeHtml(issue.filePath ? formatPath(issue.filePath) : 'Not available')}:${escapeHtml(String(issue.lineNumber ?? '-'))}</span></td>
         <td>${escapeHtml(issue.recommendation)}${docs.length ? `<ul class="doc-links">${docs.map((link) => `<li><a href="${escapeAttribute(link.href)}">${escapeHtml(link.label)}</a></li>`).join('')}</ul>` : ''}</td>
       </tr>`
@@ -4876,6 +6602,19 @@ function findingsCategoryHtml(
         </table>
       ` : '<p class="muted">No findings detected for this category.</p>'}
     </div>`
+}
+
+function evidenceListHtml(issue: AnalysisIssue) {
+  if (!issue.evidence?.length) {
+    return ''
+  }
+
+  return `<ul class="doc-links">${issue.evidence
+    .map((item) => {
+      const location = item.filePath ? ` (${formatPath(item.filePath)}${item.lineNumber ? `:${item.lineNumber}` : ''})` : ''
+      return `<li><strong>${escapeHtml(item.label)}</strong>: ${escapeHtml(item.detail)}${escapeHtml(location)}</li>`
+    })
+    .join('')}</ul>`
 }
 
 function suppressedFindingsHtml(
@@ -4928,9 +6667,38 @@ function severityBadgeHtml(severity: Severity) {
 }
 
 function getTopRiskIssues(issues: AnalysisIssue[]) {
-  return [...issues]
-    .filter((issue) => issue.severity !== 'Info')
-    .sort((left, right) => severityRank[right.severity] - severityRank[left.severity] || left.category.localeCompare(right.category))
+  const byRootCause = new Map<string, AnalysisIssue>()
+  const candidates = issues.filter((candidate) => candidate.severity !== 'Info')
+  const preferredCandidates = candidates.some((candidate) => (candidate.confidence ?? 'Medium') !== 'Low')
+    ? candidates.filter((candidate) => (candidate.confidence ?? 'Medium') !== 'Low')
+    : candidates
+
+  for (const issue of preferredCandidates) {
+    const key = getRootCauseKey(issue)
+    const existing = byRootCause.get(key)
+    if (!existing || compareRiskIssues(issue, existing) < 0) {
+      byRootCause.set(key, issue)
+    }
+  }
+
+  return [...byRootCause.values()].sort(compareRiskIssues)
+}
+
+function compareRiskIssues(left: AnalysisIssue, right: AnalysisIssue) {
+  return severityRank[right.severity] - severityRank[left.severity]
+    || confidenceRank[right.confidence ?? 'Medium'] - confidenceRank[left.confidence ?? 'Medium']
+    || getRiskPriorityRank(left) - getRiskPriorityRank(right)
+    || getRuleId(left).localeCompare(getRuleId(right))
+}
+
+function getRiskPriorityRank(issue: AnalysisIssue) {
+  if (issue.category === 'Security' && /auth|jwt/i.test(getRuleId(issue) + issue.title)) return 1
+  if (issue.category === 'Security') return 2
+  if (issue.category === 'Architecture') return 3
+  if (issue.category === 'DependencyInjection') return 4
+  if (issue.category === 'EfCore') return 5
+  if (issue.category === 'ApiReadiness') return 6
+  return 7
 }
 
 function buildRecommendedRoadmap(result: AnalysisResult, counts: Record<Severity, number>) {
@@ -5096,10 +6864,6 @@ function getDetectionReason(issue: AnalysisIssue) {
 function getDetectionMethod(issue: AnalysisIssue) {
   if (issue.detectionMethod) {
     return issue.detectionMethod
-  }
-
-  if (issue.lineNumber && ['Architecture', 'DependencyInjection', 'EfCore'].includes(issue.category)) {
-    return 'Roslyn Semantic Analysis'
   }
 
   if (issue.category === 'Architecture' || issue.ruleId === 'EF001') {

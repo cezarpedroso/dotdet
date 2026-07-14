@@ -1,5 +1,6 @@
 using Forge.Api.Analysis;
 using Forge.Api.Models;
+using Forge.Api.Services;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
@@ -7,6 +8,17 @@ namespace Forge.Api.Analyzers;
 
 public sealed class EfCoreAnalyzer
 {
+    private static readonly HashSet<string> DestructiveMigrationOperations = new(StringComparer.Ordinal)
+    {
+        "DropTable",
+        "DropColumn",
+        "DropForeignKey",
+        "DropIndex",
+        "DropPrimaryKey",
+        "DropUniqueConstraint",
+        "DropCheckConstraint"
+    };
+
     private readonly SemanticAnalysisHelper _semanticHelper;
 
     public EfCoreAnalyzer(SemanticAnalysisHelper semanticHelper)
@@ -75,7 +87,8 @@ public sealed class EfCoreAnalyzer
                     dbContext.Project,
                     dbContext.FilePath,
                     dbContext.LineNumber,
-                    "Add DbSet properties for aggregate roots or confirm the context is intentionally model-built only."));
+                    "Add DbSet properties for aggregate roots or confirm the context is intentionally model-built only.",
+                    dbContext.DetectionMethod));
             }
 
             foreach (var entity in dbContext.DbSetEntities)
@@ -105,13 +118,16 @@ public sealed class EfCoreAnalyzer
                     entityClass.Project,
                     entityClass.FilePath,
                     AnalyzerUtilities.GetLineNumber(entityClass.ClassDeclaration),
-                    "Add a conventional primary key property or configure the key explicitly in OnModelCreating."));
+                    "Add a conventional primary key property or configure the key explicitly in OnModelCreating.",
+                    entityClass.SemanticModel is null
+                        ? IssueEnrichmentService.RoslynSyntaxAnalysis
+                        : IssueEnrichmentService.RoslynSemanticAnalysis));
             }
         }
 
         foreach (var migrationOperation in FindRiskyMigrationOperations(productionContext))
         {
-            var isDestructiveSchemaChange = migrationOperation.Operation is "DropTable" or "DropColumn";
+            var isDestructiveSchemaChange = DestructiveMigrationOperations.Contains(migrationOperation.Operation);
             issues.Add(CreateIssue(
                 isDestructiveSchemaChange ? "EF004" : "EF005",
                 issues.Count,
@@ -123,7 +139,8 @@ public sealed class EfCoreAnalyzer
                 migrationOperation.LineNumber,
                 isDestructiveSchemaChange
                     ? "Review data-loss impact, add backups or expand/contract migration steps, and document the deployment plan."
-                    : "Prefer provider-safe migration APIs when possible, and document why raw SQL is required."));
+                    : "Prefer provider-safe migration APIs when possible, and document why raw SQL is required.",
+                migrationOperation.DetectionMethod));
         }
 
         foreach (var dbContextGroup in dbContexts.GroupBy(dbContext => dbContext.Project))
@@ -142,7 +159,8 @@ public sealed class EfCoreAnalyzer
                     dbContextGroup.Key,
                     dbContextGroup.Key.FilePath,
                     null,
-                    "Add migrations or document the external migration strategy used for this data store."));
+                    "Add migrations or document the external migration strategy used for this data store.",
+                    IssueEnrichmentService.MsBuildProjectConfiguration));
             }
         }
 
@@ -187,7 +205,8 @@ public sealed class EfCoreAnalyzer
                     document.Project,
                     document.FilePath,
                     AnalyzerUtilities.GetLineNumber(classDeclaration),
-                    dbSetEntities);
+                    dbSetEntities,
+                    IssueEnrichmentService.RoslynSemanticAnalysis);
             }
         }
     }
@@ -218,7 +237,8 @@ public sealed class EfCoreAnalyzer
                     sourceFile.Project,
                     sourceFile.FilePath,
                     AnalyzerUtilities.GetLineNumber(classDeclaration),
-                    dbSetEntities);
+                    dbSetEntities,
+                    IssueEnrichmentService.RoslynSyntaxAnalysis);
             }
         }
     }
@@ -236,11 +256,16 @@ public sealed class EfCoreAnalyzer
         {
             foreach (var invocation in document.Root.DescendantNodes().OfType<InvocationExpressionSyntax>())
             {
+                if (!IsInsideMigrationUpMethod(invocation))
+                {
+                    continue;
+                }
+
                 var methodSymbol = document.SemanticModel.GetSymbolInfo(invocation).Symbol as IMethodSymbol
                     ?? document.SemanticModel.GetSymbolInfo(invocation.Expression).Symbol as IMethodSymbol;
                 var operationName = methodSymbol?.Name ?? GetInvokedMethodName(invocation);
 
-                if (operationName is not ("DropTable" or "DropColumn" or "Sql"))
+                if (operationName is null || !IsRiskyMigrationOperation(operationName))
                 {
                     continue;
                 }
@@ -250,7 +275,8 @@ public sealed class EfCoreAnalyzer
                     document.Project,
                     document.FilePath,
                     Path.GetFileName(document.FilePath),
-                    AnalyzerUtilities.GetLineNumber(invocation));
+                    AnalyzerUtilities.GetLineNumber(invocation),
+                    IssueEnrichmentService.RoslynSemanticAnalysis);
             }
         }
     }
@@ -261,6 +287,11 @@ public sealed class EfCoreAnalyzer
         {
             foreach (var invocation in sourceFile.Root.DescendantNodes().OfType<InvocationExpressionSyntax>())
             {
+                if (!IsInsideMigrationUpMethod(invocation))
+                {
+                    continue;
+                }
+
                 var operationName = invocation.Expression switch
                 {
                     MemberAccessExpressionSyntax memberAccess => memberAccess.Name.Identifier.ValueText,
@@ -268,7 +299,7 @@ public sealed class EfCoreAnalyzer
                     _ => null
                 };
 
-                if (operationName is not ("DropTable" or "DropColumn" or "Sql"))
+                if (operationName is null || !IsRiskyMigrationOperation(operationName))
                 {
                     continue;
                 }
@@ -278,9 +309,20 @@ public sealed class EfCoreAnalyzer
                     sourceFile.Project,
                     sourceFile.FilePath,
                     Path.GetFileName(sourceFile.FilePath),
-                    AnalyzerUtilities.GetLineNumber(invocation));
+                    AnalyzerUtilities.GetLineNumber(invocation),
+                    IssueEnrichmentService.RoslynSyntaxAnalysis);
             }
         }
+    }
+
+    private static bool IsInsideMigrationUpMethod(SyntaxNode node)
+    {
+        return node.Ancestors()
+            .OfType<MethodDeclarationSyntax>()
+            .FirstOrDefault()?
+            .Identifier
+            .ValueText
+            .Equals("Up", StringComparison.Ordinal) == true;
     }
 
     private static bool IsMigrationFile(SourceFileContext sourceFile)
@@ -321,6 +363,12 @@ public sealed class EfCoreAnalyzer
             IdentifierNameSyntax identifierName => identifierName.Identifier.ValueText,
             _ => string.Empty
         };
+    }
+
+    private static bool IsRiskyMigrationOperation(string? operationName)
+    {
+        return operationName is "Sql"
+            || (operationName is not null && DestructiveMigrationOperations.Contains(operationName));
     }
 
     private static bool IsDbSetType(TypeSyntax type)
@@ -509,7 +557,8 @@ public sealed class EfCoreAnalyzer
         AnalyzedProject project,
         string filePath,
         int? lineNumber,
-        string recommendation)
+        string recommendation,
+        string? detectionMethod = null)
     {
         return new AnalysisIssue
         {
@@ -523,6 +572,7 @@ public sealed class EfCoreAnalyzer
             FilePath = filePath,
             LineNumber = lineNumber,
             Recommendation = recommendation,
+            DetectionMethod = detectionMethod,
             WhyDetected = AnalyzerUtilities.BuildEvidence(
                 ("Rule", ruleId),
                 ("Project", project.Name),
@@ -540,7 +590,8 @@ public sealed class EfCoreAnalyzer
         AnalyzedProject Project,
         string FilePath,
         int LineNumber,
-        IReadOnlyList<DbSetEntityInfo> DbSetEntities);
+        IReadOnlyList<DbSetEntityInfo> DbSetEntities,
+        string DetectionMethod);
 
     private sealed record EntityClass(
         AnalyzedProject Project,
@@ -560,7 +611,8 @@ public sealed class EfCoreAnalyzer
         AnalyzedProject Project,
         string FilePath,
         string FileName,
-        int LineNumber);
+        int LineNumber,
+        string DetectionMethod);
 
     private sealed record EntityModelConfiguration(
         IReadOnlySet<string> KeyedEntityTypeKeys,

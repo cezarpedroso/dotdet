@@ -59,54 +59,36 @@ public sealed class DependencyInjectionAnalyzer
 
         foreach (var duplicateGroup in registrations
             .GroupBy(
-                registration => new
-                {
-                    registration.PrimaryTypeKey,
-                    registration.ImplementationTypeKey,
-                    registration.Lifetime
-                })
+                registration => BuildGroupKey(registration.Project.Name, registration.PrimaryTypeKey),
+                StringComparer.OrdinalIgnoreCase)
             .Where(group => group.Count() > 1))
         {
-            var first = duplicateGroup.First();
-            issues.Add(CreateIssue(
-                "DI001",
-                issues.Count,
-                "Duplicate dependency injection registration",
-                $"{first.TypeName} is registered {duplicateGroup.Count()} times in startup or composition code.",
-                IssueSeverity.Warning,
-                first.Project,
-                first.FilePath,
-                first.LineNumber,
-                "Consolidate duplicate registrations so service lifetime and implementation choice are unambiguous."));
+            issues.Add(CreateDuplicateRegistrationIssue(duplicateGroup, issues.Count));
         }
 
         var injectedDependencies = context.SemanticDocuments.Count > 0
             ? FindSemanticInjectedDependencies(productionContext)
             : FindSyntaxInjectedDependencies(productionContext);
 
-        foreach (var injectedDependency in injectedDependencies)
-        {
-            var ownerIsContainerActivated = injectedDependency.OwnerIsFrameworkActivated
-                || injectedDependency.OwnerTypeKeys.Any(registeredTypes.Contains);
-
-            if (injectedDependency.TypeKeys.Any(registeredTypes.Contains)
-                || !ownerIsContainerActivated
-                || IsKnownFrameworkDependency(injectedDependency)
-                || !IsLikelyApplicationService(injectedDependency.TypeName))
+        var unregisteredDependencies = injectedDependencies
+            .Where(injectedDependency =>
             {
-                continue;
-            }
+                var ownerIsContainerActivated = injectedDependency.OwnerIsFrameworkActivated
+                    || injectedDependency.OwnerTypeKeys.Any(registeredTypes.Contains);
 
-            issues.Add(CreateIssue(
-                "DI002",
-                issues.Count,
-                "Constructor dependency appears unregistered",
-                $"{injectedDependency.OwnerType} injects {injectedDependency.TypeName}, but DotDet did not find a matching service registration.",
-                IssueSeverity.Warning,
-                injectedDependency.Project,
-                injectedDependency.FilePath,
-                injectedDependency.LineNumber,
-                "Register the dependency in Program.cs/Startup.cs or in a source-defined IServiceCollection extension method."));
+                return !injectedDependency.TypeKeys.Any(registeredTypes.Contains)
+                    && ownerIsContainerActivated
+                    && !IsKnownFrameworkDependency(injectedDependency)
+                    && IsLikelyApplicationService(injectedDependency.TypeName);
+            })
+            .ToArray();
+
+        foreach (var missingDependencyGroup in unregisteredDependencies
+            .GroupBy(
+                dependency => BuildGroupKey(dependency.Project.Name, dependency.TypeKeys.FirstOrDefault() ?? dependency.TypeName),
+                StringComparer.OrdinalIgnoreCase))
+        {
+            issues.Add(CreateUnregisteredDependencyIssue(missingDependencyGroup, issues.Count));
         }
 
         foreach (var lifetimeIssue in FindLifetimeIssues(registrations, injectedDependencies, issues.Count))
@@ -259,11 +241,13 @@ public sealed class DependencyInjectionAnalyzer
             TypeName: FormatTypeName(serviceType),
             PrimaryTypeKey: GetTypeKey(serviceType),
             ImplementationTypeKey: implementationType is null ? null : GetTypeKey(implementationType),
+            ImplementationTypeName: implementationType is null ? null : FormatTypeName(implementationType),
             TypeKeys: typeKeys.ToArray(),
             Lifetime: GetLifetime(methodName),
             Project: document.Project,
             FilePath: document.FilePath,
-            LineNumber: AnalyzerUtilities.GetLineNumber(invocation));
+            LineNumber: AnalyzerUtilities.GetLineNumber(invocation),
+            DetectionMethod: IssueEnrichmentService.RoslynSemanticAnalysis);
         return true;
     }
 
@@ -323,11 +307,13 @@ public sealed class DependencyInjectionAnalyzer
                     registration.TypeName,
                     registration.PrimaryTypeKey,
                     registration.ImplementationTypeKey,
+                    registration.ImplementationTypeName,
                     registration.TypeKeys,
                     GetLifetime(methodName),
                     sourceFile.Project,
                     sourceFile.FilePath,
-                    AnalyzerUtilities.GetLineNumber(invocation));
+                    AnalyzerUtilities.GetLineNumber(invocation),
+                    IssueEnrichmentService.RoslynSyntaxAnalysis);
             }
         }
     }
@@ -346,7 +332,7 @@ public sealed class DependencyInjectionAnalyzer
 
             return typeKeys.Length == 0
                 ? null
-                : new SyntaxServiceRegistration(typeKeys[0], typeKeys[0], typeKeys.Skip(1).FirstOrDefault(), typeKeys);
+                : new SyntaxServiceRegistration(typeKeys[0], typeKeys[0], typeKeys.Skip(1).FirstOrDefault(), typeKeys.Skip(1).FirstOrDefault(), typeKeys);
         }
 
         var typeOfArguments = invocation.ArgumentList.Arguments
@@ -359,7 +345,7 @@ public sealed class DependencyInjectionAnalyzer
 
         return typeOfArguments.Length == 0
             ? null
-            : new SyntaxServiceRegistration(typeOfArguments[0], typeOfArguments[0], typeOfArguments.Skip(1).FirstOrDefault(), typeOfArguments);
+            : new SyntaxServiceRegistration(typeOfArguments[0], typeOfArguments[0], typeOfArguments.Skip(1).FirstOrDefault(), typeOfArguments.Skip(1).FirstOrDefault(), typeOfArguments);
     }
 
     private static IEnumerable<InjectedDependency> FindSemanticInjectedDependencies(SolutionAnalysisContext context)
@@ -401,7 +387,8 @@ public sealed class DependencyInjectionAnalyzer
                             OwnerIsFrameworkActivated: IsFrameworkActivatedType(classSymbol, classDeclaration),
                             Project: document.Project,
                             FilePath: document.FilePath,
-                            LineNumber: AnalyzerUtilities.GetLineNumber(parameter));
+                            LineNumber: AnalyzerUtilities.GetLineNumber(parameter),
+                            DetectionMethod: IssueEnrichmentService.RoslynSemanticAnalysis);
                     }
                 }
             }
@@ -438,7 +425,8 @@ public sealed class DependencyInjectionAnalyzer
                             IsFrameworkActivatedType(classDeclaration),
                             sourceFile.Project,
                             sourceFile.FilePath,
-                            AnalyzerUtilities.GetLineNumber(parameter));
+                            AnalyzerUtilities.GetLineNumber(parameter),
+                            IssueEnrichmentService.RoslynSyntaxAnalysis);
                     }
                 }
             }
@@ -629,7 +617,8 @@ public sealed class DependencyInjectionAnalyzer
                 injectedDependency.Project,
                 injectedDependency.FilePath,
                 injectedDependency.LineNumber,
-                "Change the consumer to a scoped lifetime or resolve scoped dependencies through IServiceScopeFactory inside a controlled scope.");
+                "Change the consumer to a scoped lifetime or resolve scoped dependencies through IServiceScopeFactory inside a controlled scope.",
+                injectedDependency.DetectionMethod);
         }
     }
 
@@ -675,6 +664,105 @@ public sealed class DependencyInjectionAnalyzer
         return keys.ToArray();
     }
 
+    private static AnalysisIssue CreateDuplicateRegistrationIssue(
+        IEnumerable<ServiceRegistration> registrations,
+        int index)
+    {
+        var registrationGroup = registrations
+            .OrderBy(registration => registration.FilePath, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(registration => registration.LineNumber)
+            .ToArray();
+        var first = registrationGroup[0];
+        var serviceType = first.TypeName;
+        var evidence = registrationGroup
+            .Select(registration => new AnalysisEvidence
+            {
+                Label = "Registration",
+                Detail = BuildRegistrationEvidenceDetail(registration),
+                FilePath = registration.FilePath,
+                LineNumber = registration.LineNumber
+            })
+            .ToArray();
+        var implementationSummary = registrationGroup
+            .Select(registration => registration.ImplementationTypeName ?? registration.TypeName)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var lifetimeSummary = registrationGroup
+            .Select(registration => registration.Lifetime)
+            .Distinct()
+            .Select(GetLifetimeLabel)
+            .ToArray();
+
+        return new AnalysisIssue
+        {
+            Id = $"DI001-{index + 1:D3}",
+            RuleId = "DI001",
+            Title = $"Duplicate registrations for {serviceType}",
+            Description = $"{serviceType} is registered {registrationGroup.Length} times in {first.Project.Name}. Implementations: {string.Join(", ", implementationSummary)}. Lifetimes: {string.Join(", ", lifetimeSummary)}.",
+            Severity = IssueSeverity.Warning,
+            Category = AnalysisCategories.DependencyInjection,
+            ProjectName = first.Project.Name,
+            FilePath = first.FilePath,
+            LineNumber = first.LineNumber,
+            Recommendation = $"Consolidate duplicate registrations for {serviceType} so service lifetime and implementation choice are unambiguous.",
+            DetectionMethod = first.DetectionMethod,
+            Confidence = IssueConfidence.High,
+            Evidence = evidence,
+            RootCauseKey = $"DI001|{first.Project.Name}|{first.PrimaryTypeKey}",
+            WhyDetected = BuildEvidenceText(
+                "DI001",
+                first.Project.Name,
+                first.FilePath,
+                "DotDet found multiple dependency-injection registrations for the same service type in one project.",
+                evidence)
+        };
+    }
+
+    private static AnalysisIssue CreateUnregisteredDependencyIssue(
+        IEnumerable<InjectedDependency> dependencies,
+        int index)
+    {
+        var dependencyGroup = dependencies
+            .OrderBy(dependency => dependency.FilePath, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(dependency => dependency.LineNumber)
+            .ToArray();
+        var first = dependencyGroup[0];
+        var dependencyType = first.TypeName;
+        var evidence = dependencyGroup
+            .Select(dependency => new AnalysisEvidence
+            {
+                Label = dependency.OwnerType,
+                Detail = $"{dependency.OwnerType} injects {dependency.TypeName} at {Path.GetFileName(dependency.FilePath)}:{dependency.LineNumber}",
+                FilePath = dependency.FilePath,
+                LineNumber = dependency.LineNumber
+            })
+            .ToArray();
+
+        return new AnalysisIssue
+        {
+            Id = $"DI002-{index + 1:D3}",
+            RuleId = "DI002",
+            Title = $"{dependencyType} appears unregistered",
+            Description = $"{dependencyType} appears unregistered in {first.Project.Name} and is injected in {dependencyGroup.Length} constructor location(s).",
+            Severity = IssueSeverity.Warning,
+            Category = AnalysisCategories.DependencyInjection,
+            ProjectName = first.Project.Name,
+            FilePath = first.FilePath,
+            LineNumber = first.LineNumber,
+            Recommendation = $"Register {dependencyType} in Program.cs/Startup.cs or in a source-defined IServiceCollection extension method.",
+            DetectionMethod = first.DetectionMethod,
+            Confidence = IssueConfidence.Medium,
+            Evidence = evidence,
+            RootCauseKey = $"DI002|{first.Project.Name}|{first.TypeKeys.FirstOrDefault() ?? dependencyType}",
+            WhyDetected = BuildEvidenceText(
+                "DI002",
+                first.Project.Name,
+                first.FilePath,
+                "DotDet found constructor injection sites for a dependency type that was not found in the project service registrations.",
+                evidence)
+        };
+    }
+
     private static AnalysisIssue CreateIssue(
         string ruleId,
         int index,
@@ -684,7 +772,8 @@ public sealed class DependencyInjectionAnalyzer
         AnalyzedProject project,
         string filePath,
         int lineNumber,
-        string recommendation)
+        string recommendation,
+        string? detectionMethod = null)
     {
         return new AnalysisIssue
         {
@@ -698,9 +787,7 @@ public sealed class DependencyInjectionAnalyzer
             FilePath = filePath,
             LineNumber = lineNumber,
             Recommendation = recommendation,
-            DetectionMethod = lineNumber > 0
-                ? IssueEnrichmentService.RoslynSemanticAnalysis
-                : IssueEnrichmentService.RoslynSyntaxAnalysis,
+            DetectionMethod = detectionMethod ?? IssueEnrichmentService.RoslynSyntaxAnalysis,
             Confidence = ruleId switch
             {
                 "DI002" => IssueConfidence.Medium,
@@ -718,15 +805,56 @@ public sealed class DependencyInjectionAnalyzer
         };
     }
 
+    private static string BuildRegistrationEvidenceDetail(ServiceRegistration registration)
+    {
+        var implementation = registration.ImplementationTypeName is null
+            ? registration.TypeName
+            : $"{registration.TypeName} -> {registration.ImplementationTypeName}";
+
+        return $"{implementation} ({GetLifetimeLabel(registration.Lifetime)}) at {Path.GetFileName(registration.FilePath)}:{registration.LineNumber}";
+    }
+
+    private static string BuildEvidenceText(
+        string ruleId,
+        string projectName,
+        string filePath,
+        string detected,
+        IReadOnlyList<AnalysisEvidence> evidence)
+    {
+        var evidenceLines = evidence.Select(item =>
+            $"- {item.Detail}{(string.IsNullOrWhiteSpace(item.FilePath) ? string.Empty : $" ({item.FilePath})")}");
+
+        return string.Join(Environment.NewLine, new[]
+        {
+            $"Rule: {ruleId}",
+            $"Project: {projectName}",
+            $"File: {filePath}",
+            $"Detected: {detected}",
+            "Evidence:"
+        }.Concat(evidenceLines));
+    }
+
+    private static string GetLifetimeLabel(ServiceLifetimeKind lifetime)
+    {
+        return lifetime.ToString();
+    }
+
+    private static string BuildGroupKey(params string?[] parts)
+    {
+        return string.Join('|', parts.Select(part => part?.Trim() ?? string.Empty));
+    }
+
     private sealed record ServiceRegistration(
         string TypeName,
         string PrimaryTypeKey,
         string? ImplementationTypeKey,
+        string? ImplementationTypeName,
         IReadOnlyList<string> TypeKeys,
         ServiceLifetimeKind Lifetime,
         AnalyzedProject Project,
         string FilePath,
-        int LineNumber)
+        int LineNumber,
+        string DetectionMethod)
     {
         public string Identity => $"{PrimaryTypeKey}|{FilePath}|{LineNumber}";
     }
@@ -740,12 +868,14 @@ public sealed class DependencyInjectionAnalyzer
         bool OwnerIsFrameworkActivated,
         AnalyzedProject Project,
         string FilePath,
-        int LineNumber);
+        int LineNumber,
+        string DetectionMethod);
 
     private sealed record SyntaxServiceRegistration(
         string TypeName,
         string PrimaryTypeKey,
         string? ImplementationTypeKey,
+        string? ImplementationTypeName,
         IReadOnlyList<string> TypeKeys);
 
     private enum ServiceLifetimeKind

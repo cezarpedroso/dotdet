@@ -23,12 +23,15 @@ public sealed class IssueEnrichmentService
     {
         var ruleId = issue.RuleId ?? GetStableRuleId(issue);
         var guidance = GetGuidance(ruleId, issue);
+        var detectionMethod = issue.DetectionMethod
+            ?? NormalizeGuidanceDetectionMethod(ruleId, issue, guidance.DetectionMethod)
+            ?? InferDetectionMethod(issue);
 
         return issue with
         {
             RuleId = ruleId,
             Confidence = issue.Confidence ?? guidance.Confidence ?? InferConfidence(issue),
-            DetectionMethod = issue.DetectionMethod ?? guidance.DetectionMethod ?? InferDetectionMethod(issue),
+            DetectionMethod = detectionMethod,
             ProblemSummary = issue.ProblemSummary ?? guidance.ProblemSummary ?? issue.Title,
             WhyDetected = issue.WhyDetected ?? guidance.WhyDetected ?? issue.Description,
             WhyItMatters = issue.WhyItMatters ?? guidance.WhyItMatters ?? GetDefaultWhyItMatters(issue.Category),
@@ -759,18 +762,35 @@ public sealed class IssueEnrichmentService
     {
         return issue.Category switch
         {
-            AnalysisCategories.Architecture when issue.LineNumber is > 0 => RoslynSemanticAnalysis,
             AnalysisCategories.Architecture => MsBuildProjectConfiguration,
-            AnalysisCategories.DependencyInjection when issue.LineNumber is > 0 => RoslynSemanticAnalysis,
+            AnalysisCategories.DependencyInjection when issue.LineNumber is > 0 => RoslynSyntaxAnalysis,
             AnalysisCategories.DependencyInjection => RoslynSyntaxAnalysis,
             AnalysisCategories.EfCore when issue.RuleId is "EF001" => MsBuildProjectConfiguration,
-            AnalysisCategories.EfCore when issue.LineNumber is > 0 => RoslynSemanticAnalysis,
+            AnalysisCategories.EfCore when issue.LineNumber is > 0 => RoslynSyntaxAnalysis,
             AnalysisCategories.Security when issue.RuleId is "SECJSON" or "SEC001" => MsBuildProjectConfiguration,
             AnalysisCategories.Security when issue.RuleId is "SECCONN" or "SECSECRET" or "SECJWT" => HeuristicAnalysis,
-            AnalysisCategories.Security when issue.LineNumber is > 0 => RoslynSemanticAnalysis,
-            AnalysisCategories.ApiReadiness when issue.LineNumber is > 0 => RoslynSemanticAnalysis,
+            AnalysisCategories.Security when issue.LineNumber is > 0 => RoslynSyntaxAnalysis,
+            AnalysisCategories.ApiReadiness when issue.LineNumber is > 0 => RoslynSyntaxAnalysis,
             _ => HeuristicAnalysis
         };
+    }
+
+    private static string? NormalizeGuidanceDetectionMethod(
+        string ruleId,
+        AnalysisIssue issue,
+        string? guidanceDetectionMethod)
+    {
+        if (guidanceDetectionMethod != RoslynSemanticAnalysis || IsExplicitSemanticRule(ruleId))
+        {
+            return guidanceDetectionMethod;
+        }
+
+        return issue.LineNumber is > 0 ? RoslynSyntaxAnalysis : HeuristicAnalysis;
+    }
+
+    private static bool IsExplicitSemanticRule(string ruleId)
+    {
+        return ruleId is "DI003";
     }
 
     private static string GetDefaultWhyItMatters(string category)

@@ -74,7 +74,7 @@ public sealed class ArchitectureMapService
                 {
                     "ARCHMAP001" => "Domain boundary violation",
                     "ARCHMAP002" => "Application depends directly on Infrastructure",
-                    "ARCHMAP003" => "Infrastructure depends inward through Application",
+                    "ARCHMAP003" => "Infrastructure dependency risk",
                     "ARCHMAP004" => "Lower layer depends on presentation",
                     "ARCHMAP005" => "Presentation depends directly on persistence",
                     _ => "Architecture boundary risk"
@@ -133,6 +133,12 @@ public sealed class ArchitectureMapService
         var relatedIssue = rule.IsViolation
             ? FindRelatedArchitectureIssue(dependency, issues, rule.RuleId)
             : null;
+        var isViolation = rule.IsViolation
+            && (rule.RuleId != "ARCHMAP005" || relatedIssue is not null);
+        var ruleId = isViolation ? rule.RuleId : null;
+        var reason = isViolation
+            ? rule.Reason
+            : null;
 
         return new ArchitectureMapDependency
         {
@@ -141,11 +147,11 @@ public sealed class ArchitectureMapService
             SourceLayer = sourceLayer,
             TargetLayer = targetLayer,
             Direction = GetDependencyDirection(sourceLayer, targetLayer),
-            IsViolation = rule.IsViolation,
-            RuleId = rule.RuleId,
-            Reason = rule.Reason is null
+            IsViolation = isViolation,
+            RuleId = ruleId,
+            Reason = reason is null
                 ? $"{dependency.SourceProjectName} references {dependency.TargetProjectName} and follows the inferred layer direction."
-                : $"{dependency.SourceProjectName} references {dependency.TargetProjectName}. {rule.Reason}",
+                : $"{dependency.SourceProjectName} references {dependency.TargetProjectName}. {reason}",
             RelatedFindingId = relatedIssue?.Id
         };
     }
@@ -165,11 +171,6 @@ public sealed class ArchitectureMapService
         if (sourceLayer == Application && targetLayer == Infrastructure)
         {
             return (true, "ARCHMAP002", "Application code should depend on abstractions and let Infrastructure implement them at the composition root.");
-        }
-
-        if (sourceLayer == Infrastructure && targetLayer == Application)
-        {
-            return (true, "ARCHMAP003", "Infrastructure should implement lower-level contracts without pulling application orchestration back into infrastructure packages.");
         }
 
         if (sourceLayer is Domain or Application or Infrastructure && targetLayer == Presentation)
@@ -232,14 +233,14 @@ public sealed class ArchitectureMapService
                 group => group.Key,
                 group => group.Select(dependency => dependency.TargetProjectName).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
                 StringComparer.OrdinalIgnoreCase);
-        var cycles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var cycles = new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var project in graph.Projects.Select(project => project.Name))
         {
             Visit(project, new List<string>(), new HashSet<string>(StringComparer.OrdinalIgnoreCase));
         }
 
-        return cycles.Select(cycle => (IReadOnlyList<string>)cycle.Split('|')).ToArray();
+        return cycles.Values.ToArray();
 
         void Visit(string projectName, List<string> path, HashSet<string> visiting)
         {
@@ -248,7 +249,11 @@ public sealed class ArchitectureMapService
                 var startIndex = path.FindIndex(name => name.Equals(projectName, StringComparison.OrdinalIgnoreCase));
                 if (startIndex >= 0)
                 {
-                    cycles.Add(string.Join('|', path.Skip(startIndex).Concat([projectName])));
+                    var normalizedCycle = AnalyzerUtilities.NormalizeCycle(path.Skip(startIndex).Concat([projectName]));
+                    if (!string.IsNullOrWhiteSpace(normalizedCycle.Key))
+                    {
+                        cycles.TryAdd(normalizedCycle.Key, normalizedCycle.Cycle);
+                    }
                 }
 
                 return;
