@@ -3,8 +3,8 @@ import fs from 'node:fs/promises'
 
 async function analyzeSample(page: Page) {
   await page.goto('/')
-  await expect(page.getByRole('heading', { name: '.DET' })).toBeVisible()
-  await page.getByRole('button', { name: 'Analyze Sample' }).click()
+  await expect(page.getByRole('heading', { name: 'Production readiness, grounded in your code.' })).toBeVisible()
+  await page.getByRole('button', { name: 'Run sample analysis' }).click()
   await expect(page.getByRole('button', { name: 'Overview' })).toBeVisible({ timeout: 60_000 })
 }
 
@@ -16,8 +16,8 @@ test.describe('DotDet critical smoke flows', () => {
 
   test('public landing and authenticated ZIP dashboard', async ({ page }) => {
     await page.goto('/')
-    await expect(page.getByRole('heading', { name: '.DET' })).toBeVisible()
-    await expect(page.getByRole('heading', { name: 'Production-readiness analysis for serious ASP.NET Core teams.' })).toBeVisible()
+    await expect(page.getByRole('link', { name: 'DotDet home' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Production readiness, grounded in your code.' })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Login with GitHub' }).first()).toBeVisible()
 
     await page.route('**/api/auth/me', async (route) => {
@@ -39,20 +39,21 @@ test.describe('DotDet critical smoke flows', () => {
     })
     await page.goto('/dashboard')
     await expect(page.getByRole('heading', { name: 'Welcome, Ada Lovelace' })).toBeVisible()
-    await expect(page.getByRole('heading', { name: 'Upload Solution ZIP' })).toBeVisible()
+    await expect(page.getByRole('button', { name: /Upload ZIP/ })).toBeVisible()
+    await expect(page.getByRole('button', { name: /Analyze Sample Project/ })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Login with GitHub' })).toHaveCount(0)
     await expect(page.locator('#solution-path')).toHaveCount(0)
-    await expect(page.getByRole('button', { name: 'Run Analysis' })).toBeDisabled()
   })
 
   test('sample analysis, overview, export, and responsive layout', async ({ page }) => {
     await analyzeSample(page)
 
     await page.getByRole('button', { name: 'Overview' }).click()
-    await expect(page.getByRole('heading', { name: 'Engineering readiness report' })).toBeVisible()
+    await expect(page.getByText('Engineering readiness report')).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Forge.SampleShop' })).toBeVisible()
     await expect(page.getByRole('heading', { name: 'Production Readiness' })).toBeVisible()
-    await expect(page.getByRole('heading', { name: 'Architecture' })).toBeVisible()
-    await page.getByRole('button', { name: 'Open Architecture' }).click()
+    await expect(page.getByRole('heading', { name: 'Architecture map' })).toBeVisible()
+    await page.getByRole('button', { name: 'Explore map' }).click()
     await expect(page.getByRole('heading', { name: 'Project dependency map' })).toBeVisible()
     await page.reload()
     await expect(page.getByRole('heading', { name: 'Project dependency map' })).toBeVisible()
@@ -97,7 +98,7 @@ test.describe('DotDet critical smoke flows', () => {
     expect(mobileOverflow).toBe(false)
 
     await page.setViewportSize({ width: 1920, height: 1080 })
-    const desktopReport = await page.locator('.det-overview-report').boundingBox()
+    const desktopReport = await page.locator('.det-overview-canvas').boundingBox()
     expect(desktopReport?.width ?? 0).toBeGreaterThan(1000)
     expect(desktopReport?.width ?? 0).toBeLessThanOrEqual(1480)
   })
@@ -127,13 +128,12 @@ test.describe('DotDet critical smoke flows', () => {
     await analyzeSample(page)
 
     await expect(page.getByRole('heading', { name: 'Solution Explorer' })).toBeVisible()
-    await expect(page.locator('.monaco-editor')).toBeVisible()
+    await page.locator('button').filter({ hasText: 'Program.cs' }).first().click()
+    await expect(page.getByRole('heading', { name: 'Program.cs' })).toBeVisible()
+    await expect(page.getByText(/Finding 1 of \d+/)).toBeVisible()
     await expect(page.getByRole('heading', { name: 'Engineering Guide' })).toBeVisible()
     await expect(page.getByRole('heading', { name: 'Rule' })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Copy Suggested Fix' })).toBeVisible()
-    await page.locator('button').filter({ hasText: 'Program.cs' }).first().click()
-    await expect(page.locator('.monaco-editor')).toContainText('using Forge.SampleShop.Application.Orders')
-    await expect(page.locator('.monaco-editor')).toContainText('builder.Services.AddCors')
 
     const explorer = page.locator('aside').filter({ hasText: 'SOLUTION EXPLORER' })
     const before = await explorer.boundingBox()
@@ -153,7 +153,7 @@ test.describe('DotDet critical smoke flows', () => {
 
     await page.getByRole('button', { name: 'Rule Explorer' }).click()
     await expect(page.getByRole('heading', { name: 'Rule Explorer' })).toBeVisible()
-    await expect(page.getByText(/rules shown/)).toBeVisible()
+    await expect(page.getByText(/rules detected in this analysis/)).toBeVisible()
     await expect(page.getByLabel('Finding disposition')).not.toBeVisible()
     await expect(page.getByText('This rule did not produce findings in the current analysis.')).toHaveCount(0)
     await page.getByPlaceholder('Search rules').fill('CORS')

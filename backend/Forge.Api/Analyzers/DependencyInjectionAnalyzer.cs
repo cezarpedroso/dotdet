@@ -41,6 +41,13 @@ public sealed class DependencyInjectionAnalyzer
         "AddHostedService"
     };
 
+    private static readonly HashSet<string> MediatRRegistrationMethods = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "AddMediatR",
+        "RegisterServicesFromAssembly",
+        "RegisterServicesFromAssemblyContaining"
+    };
+
     public IReadOnlyList<AnalysisIssue> Analyze(SolutionAnalysisContext context)
     {
         var issues = new List<AnalysisIssue>();
@@ -56,6 +63,7 @@ public sealed class DependencyInjectionAnalyzer
         var registeredTypes = registrations
             .SelectMany(registration => registration.TypeKeys)
             .ToHashSet(StringComparer.Ordinal);
+        var hasMediatRRegistration = HasMediatRRegistrationEvidence(productionContext);
 
         foreach (var duplicateGroup in registrations
             .GroupBy(
@@ -79,6 +87,7 @@ public sealed class DependencyInjectionAnalyzer
                 return !injectedDependency.TypeKeys.Any(registeredTypes.Contains)
                     && ownerIsContainerActivated
                     && !IsKnownFrameworkDependency(injectedDependency)
+                    && !(hasMediatRRegistration && IsMediatRDependency(injectedDependency))
                     && IsLikelyApplicationService(injectedDependency.TypeName);
             })
             .ToArray();
@@ -503,11 +512,68 @@ public sealed class DependencyInjectionAnalyzer
             return true;
         }
 
+        if (dependency.TypeKeys.Any(IsKnownFrameworkTypeKey))
+        {
+            return true;
+        }
+
         return dependency.Namespace.StartsWith("System", StringComparison.Ordinal)
             || dependency.Namespace.StartsWith("Microsoft.Extensions", StringComparison.Ordinal)
             || dependency.Namespace.StartsWith("Microsoft.AspNetCore", StringComparison.Ordinal)
             || dependency.Namespace.StartsWith("Microsoft.EntityFrameworkCore", StringComparison.Ordinal)
             || dependency.Namespace.Equals("AutoMapper", StringComparison.Ordinal);
+    }
+
+    private static bool HasMediatRRegistrationEvidence(SolutionAnalysisContext context)
+    {
+        if (context.SemanticDocuments.Count > 0)
+        {
+            return context.SemanticDocuments.Any(document =>
+                document.Root.DescendantNodes().OfType<InvocationExpressionSyntax>().Any(invocation =>
+                {
+                    var methodName = GetMethodSymbol(document.SemanticModel, invocation)?.Name
+                        ?? GetInvokedMethodName(invocation);
+
+                    return MediatRRegistrationMethods.Contains(methodName);
+                })
+                || document.Root.DescendantNodes().OfType<TypeSyntax>().Any(typeSyntax =>
+                {
+                    var typeSymbol = document.SemanticModel.GetTypeInfo(typeSyntax).Type;
+                    return typeSymbol is not null
+                        && typeSymbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)
+                            .Contains("MediatR.MediatRServiceConfiguration", StringComparison.Ordinal);
+                }));
+        }
+
+        return context.SourceFiles.Any(file =>
+            MediatRRegistrationMethods.Any(methodName => file.Text.Contains(methodName, StringComparison.Ordinal))
+            || file.Text.Contains("MediatRServiceConfiguration", StringComparison.Ordinal));
+    }
+
+    private static bool IsMediatRDependency(InjectedDependency dependency)
+    {
+        return dependency.TypeName.Equals("IMediator", StringComparison.Ordinal)
+            || dependency.TypeKeys.Any(typeKey =>
+                typeKey.Equals("MediatR.IMediator", StringComparison.Ordinal)
+                || typeKey.EndsWith(".IMediator", StringComparison.Ordinal));
+    }
+
+    private static bool IsKnownFrameworkTypeKey(string typeKey)
+    {
+        var normalized = typeKey.Replace("global::", string.Empty, StringComparison.Ordinal);
+        var genericType = normalized.Split('<')[0];
+
+        return genericType is
+            "Microsoft.Extensions.Logging.ILogger"
+            or "Microsoft.Extensions.Logging.ILoggerFactory"
+            or "Microsoft.Extensions.Logging.ILoggerProvider"
+            or "Microsoft.Extensions.Configuration.IConfiguration"
+            or "Microsoft.Extensions.Hosting.IHostEnvironment"
+            or "Microsoft.AspNetCore.Hosting.IWebHostEnvironment"
+            or "Microsoft.Extensions.Options.IOptions"
+            or "Microsoft.Extensions.Options.IOptionsSnapshot"
+            or "Microsoft.Extensions.Options.IOptionsMonitor"
+            or "System.IServiceProvider";
     }
 
     private static bool IsFrameworkActivatedType(INamedTypeSymbol? classSymbol, ClassDeclarationSyntax classDeclaration)

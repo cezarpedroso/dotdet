@@ -45,7 +45,7 @@ public sealed class ScoringService
     private static int CalculateScore(IEnumerable<AnalysisIssue> issues)
     {
         var groupedIssues = issues
-            .Where(issue => issue.Suppression is not { IsExpired: false })
+            .Where(AnalyzerUtilities.IsActiveProductionFinding)
             .GroupBy(issue => issue.RootCauseKey
                 ?? $"{issue.RuleId ?? issue.Id}|{issue.Category}|{issue.ProjectName ?? "Solution"}|{issue.FilePath ?? string.Empty}");
         var penalty = groupedIssues.Sum(group =>
@@ -75,7 +75,7 @@ public sealed class ScoringService
         var activeCriticalCount = issues
             .Where(issue =>
                 issue.Severity == IssueSeverity.Critical
-                && issue.Suppression is not { IsExpired: false })
+                && AnalyzerUtilities.IsActiveProductionFinding(issue))
             .Select(GetRootCauseKey)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Count();

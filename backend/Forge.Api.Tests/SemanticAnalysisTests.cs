@@ -4,10 +4,13 @@ using Forge.Api.Contracts;
 using Forge.Api.Controllers;
 using Forge.Api.Models;
 using Forge.Api.Services;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using System.Net;
 using System.Security.Claims;
@@ -252,6 +255,77 @@ public sealed class SemanticAnalysisTests
     }
 
     [Fact]
+    public void ScoringService_IgnoresInfoOnlyFindingsForProductionReadiness()
+    {
+        var service = new ScoringService();
+        var infoOnlyFindings = new[]
+        {
+            CreateIssue(
+                "API004-INFO",
+                "API004",
+                "Health checks are missing",
+                "A Web UI host does not map health checks.",
+                IssueSeverity.Info,
+                AnalysisCategories.ApiReadiness,
+                "SchemaArchitect.Web",
+                "Program.cs",
+                1),
+            CreateIssue(
+                "API005-INFO",
+                "API005",
+                "Global exception handling is missing",
+                "A Web UI host does not configure global exception handling.",
+                IssueSeverity.Info,
+                AnalysisCategories.ApiReadiness,
+                "SchemaArchitect.Web",
+                "Program.cs",
+                1)
+        };
+
+        var categoryScores = service.CalculateCategoryScores(infoOnlyFindings);
+
+        Assert.Equal(100, categoryScores.ApiReadiness);
+        Assert.Equal(100, service.CalculateOverallScore(categoryScores, infoOnlyFindings));
+    }
+
+    [Fact]
+    public void EngineeringAssessment_InfoOnlyFindingsDoNotCreateActiveRisks()
+    {
+        var service = new EngineeringAssessmentService();
+        var infoOnlyFindings = new[]
+        {
+            CreateIssue(
+                "API004-INFO",
+                "API004",
+                "Health checks are missing",
+                "A Web UI host does not map health checks.",
+                IssueSeverity.Info,
+                AnalysisCategories.ApiReadiness,
+                "SchemaArchitect.Web",
+                "Program.cs",
+                1)
+        };
+        var assessment = service.Build(
+            100,
+            new CategoryScores
+            {
+                Architecture = 100,
+                Security = 100,
+                EfCore = 100,
+                DependencyInjection = 100,
+                ApiReadiness = 100
+            },
+            infoOnlyFindings,
+            CreateEmptyArchitectureMap());
+
+        Assert.Contains("No active production root-cause findings were detected", assessment.ScoreExplanation);
+        Assert.DoesNotContain("across 1 active root-cause", assessment.ScoreExplanation, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(assessment.HighestRisks, risk => risk.Contains("API", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(assessment.HighestRisks, risk => risk.Contains("No significant production risks", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(assessment.RecommendedPriorities, priority => priority.Contains("Review remaining warnings", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public void EfCoreAnalyzer_IgnoresDestructiveMigrationOperationsInDownMethod()
     {
         var issues = AnalyzeMigrationSource("""
@@ -430,6 +504,23 @@ public sealed class SemanticAnalysisTests
                 Directory.Delete(tempRoot, recursive: true);
             }
         }
+    }
+
+    [Fact]
+    public async Task AnalysisController_AnalyzePath_ReturnsNotFoundOutsideDevelopment()
+    {
+        var controller = new AnalysisController(
+            CreateService(),
+            new ZipExtractionService(),
+            new AnalysisHistoryStore(Path.Combine(Path.GetTempPath(), $"dotdet-history-{Guid.NewGuid():N}.json")),
+            new TestWebHostEnvironment { EnvironmentName = Environments.Production },
+            NullLogger<AnalysisController>.Instance);
+
+        var response = await controller.AnalyzePath(
+            new AnalyzePathRequest(@"C:\server\private\Secret.sln"),
+            CancellationToken.None);
+
+        Assert.IsType<NotFoundResult>(response.Result);
     }
 
     [Fact]
@@ -1204,6 +1295,454 @@ public sealed class SemanticAnalysisTests
     }
 
     [Fact]
+    public void ApiReadinessAnalyzer_RazorPagesHostDoesNotReceiveApiEndpointOrSwaggerWarnings()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"dotdet-api-intent-razor-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+
+        try
+        {
+            var issues = AnalyzeApiReadinessProject(
+                tempRoot,
+                "SchemaArchitect.Web",
+                """
+                var builder = WebApplication.CreateBuilder(args);
+                builder.Services.AddRazorPages();
+                var app = builder.Build();
+                app.MapRazorPages();
+                app.Run();
+                """,
+                ("Pages/Index.cshtml", "@page\n<h1>SchemaArchitect</h1>"));
+
+            Assert.DoesNotContain(issues, issue => issue.RuleId is "API002" or "API003");
+            Assert.Contains(issues, issue =>
+                issue.RuleId == "API004"
+                && issue.Severity == IssueSeverity.Info
+                && issue.WhyDetected?.Contains("Project intent: WebUi", StringComparison.Ordinal) == true);
+            Assert.InRange(new ScoringService().CalculateCategoryScores(issues).ApiReadiness, 98, 100);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_WebUiWithOnlyInfoGuidanceHasNoActiveProductionFindings()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"dotdet-clean-webui-{Guid.NewGuid():N}");
+        var solutionPath = Path.Combine(tempRoot, "SchemaArchitect.slnx");
+        Directory.CreateDirectory(tempRoot);
+
+        try
+        {
+            WriteFile(solutionPath, """
+                <Solution>
+                  <Project Path="src/SchemaArchitect.Web/SchemaArchitect.Web.csproj" />
+                </Solution>
+                """);
+            WriteFile(Path.Combine(tempRoot, "src", "SchemaArchitect.Web", "SchemaArchitect.Web.csproj"), """
+                <Project Sdk="Microsoft.NET.Sdk.Web">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                  </PropertyGroup>
+                </Project>
+                """);
+            WriteFile(Path.Combine(tempRoot, "src", "SchemaArchitect.Web", "Program.cs"), """
+                var builder = WebApplication.CreateBuilder(args);
+                builder.Services.AddRazorPages();
+                var app = builder.Build();
+                app.UseHttpsRedirection();
+                app.MapRazorPages();
+                app.Run();
+                """);
+            WriteFile(Path.Combine(tempRoot, "src", "SchemaArchitect.Web", "appsettings.json"), """
+                {
+                  "Logging": {
+                    "LogLevel": {
+                      "Default": "Information"
+                    }
+                  }
+                }
+                """);
+            WriteFile(Path.Combine(tempRoot, "src", "SchemaArchitect.Web", "Pages", "Index.cshtml"), """
+                @page
+                <h1>SchemaArchitect</h1>
+                """);
+
+            var result = await CreateService().AnalyzeAsync(solutionPath, CancellationToken.None);
+            var activeProductionFindings = result.Issues
+                .Where(AnalyzerUtilities.IsActiveProductionFinding)
+                .ToArray();
+
+            Assert.Empty(activeProductionFindings);
+            Assert.Equal(100, result.CategoryScores.ApiReadiness);
+            Assert.Equal(100, result.OverallScore);
+            Assert.DoesNotContain(result.Issues, issue => issue.RuleId is "API002" or "API003");
+            Assert.All(result.Issues.Where(issue => issue.Category == AnalysisCategories.ApiReadiness), issue =>
+                Assert.Equal(IssueSeverity.Info, issue.Severity));
+            Assert.DoesNotContain(result.EngineeringAssessment!.HighestRisks, risk =>
+                risk.Contains("API reliability", StringComparison.OrdinalIgnoreCase));
+            Assert.Contains("No active production root-cause findings were detected", result.EngineeringAssessment!.ScoreExplanation);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ApiReadinessAnalyzer_MvcUiHostDoesNotReceiveApiEndpointOrSwaggerWarnings()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"dotdet-api-intent-mvc-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+
+        try
+        {
+            var issues = AnalyzeApiReadinessProject(
+                tempRoot,
+                "Storefront.Web",
+                """
+                var builder = WebApplication.CreateBuilder(args);
+                builder.Services.AddControllersWithViews();
+                var app = builder.Build();
+                app.MapControllerRoute(
+                    name: "default",
+                    pattern: "{controller=Home}/{action=Index}/{id?}");
+                app.Run();
+                """,
+                ("Controllers/HomeController.cs", """
+                using Microsoft.AspNetCore.Mvc;
+
+                public sealed class HomeController : Controller
+                {
+                    public IActionResult Index() => View();
+                }
+                """),
+                ("Views/Home/Index.cshtml", "<h1>Home</h1>"));
+
+            Assert.DoesNotContain(issues, issue => issue.RuleId is "API002" or "API003");
+            Assert.All(issues.Where(issue => issue.RuleId is "API004" or "API005"), issue =>
+                Assert.Equal(IssueSeverity.Info, issue.Severity));
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ApiReadinessAnalyzer_MvcUiSupportApiControllerDoesNotReceiveSwaggerWarning()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"dotdet-api-intent-support-controller-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+
+        try
+        {
+            var issues = AnalyzeApiReadinessProject(
+                tempRoot,
+                "Storefront.Web",
+                """
+                var builder = WebApplication.CreateBuilder(args);
+                builder.Services.AddControllersWithViews();
+                builder.Services.AddRazorPages();
+                var app = builder.Build();
+                app.MapControllerRoute(
+                    name: "default",
+                    pattern: "{controller=Home}/{action=Index}/{id?}");
+                app.MapRazorPages();
+                app.Run();
+                """,
+                ("Controllers/UserController.cs", """
+                using Microsoft.AspNetCore.Mvc;
+
+                [ApiController]
+                [Route("[controller]")]
+                public sealed class UserController : ControllerBase
+                {
+                    [HttpGet]
+                    public IActionResult GetCurrentUser() => Ok();
+                }
+                """),
+                ("Views/Home/Index.cshtml", "<h1>Home</h1>"),
+                ("Pages/Index.cshtml", "@page\n<h1>Home</h1>"));
+
+            Assert.DoesNotContain(issues, issue => issue.RuleId == "API003");
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ApiReadinessAnalyzer_UnusedApiBaseControllerDoesNotReceiveSwaggerWarning()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"dotdet-api-intent-base-controller-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+
+        try
+        {
+            var issues = AnalyzeApiReadinessProject(
+                tempRoot,
+                "Storefront.Web",
+                """
+                var builder = WebApplication.CreateBuilder(args);
+                builder.Services.AddControllersWithViews();
+                var app = builder.Build();
+                app.MapControllerRoute(
+                    name: "default",
+                    pattern: "{controller=Home}/{action=Index}/{id?}");
+                app.Run();
+                """,
+                ("Controllers/Api/BaseApiController.cs", """
+                using Microsoft.AspNetCore.Mvc;
+
+                [ApiController]
+                [Route("api/[controller]/[action]")]
+                public abstract class BaseApiController : ControllerBase
+                {
+                }
+                """),
+                ("Views/Home/Index.cshtml", "<h1>Home</h1>"));
+
+            Assert.DoesNotContain(issues, issue => issue.RuleId == "API003");
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ApiReadinessAnalyzer_BlazorHostDoesNotReceiveApiEndpointOrSwaggerWarnings()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"dotdet-api-intent-blazor-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+
+        try
+        {
+            var issues = AnalyzeApiReadinessProject(
+                tempRoot,
+                "BackOffice.Blazor",
+                """
+                var builder = WebApplication.CreateBuilder(args);
+                builder.Services.AddRazorComponents();
+                var app = builder.Build();
+                app.MapRazorComponents<App>();
+                app.Run();
+                """,
+                ("Components/App.razor", "<Router AppAssembly=\"typeof(Program).Assembly\" />"));
+
+            Assert.DoesNotContain(issues, issue => issue.RuleId is "API002" or "API003");
+            Assert.Contains(issues, issue =>
+                issue.RuleId == "API004"
+                && issue.Severity == IssueSeverity.Info
+                && issue.WhyDetected?.Contains("Project intent: WebUi", StringComparison.Ordinal) == true);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ApiReadinessAnalyzer_MinimalApiStillReceivesSwaggerReadinessWarning()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"dotdet-api-intent-minimal-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+
+        try
+        {
+            var issues = AnalyzeApiReadinessProject(
+                tempRoot,
+                "Catalog.Api",
+                """
+                var builder = WebApplication.CreateBuilder(args);
+                var app = builder.Build();
+                app.MapGet("/catalog", () => Results.Ok());
+                app.Run();
+                """);
+
+            Assert.DoesNotContain(issues, issue => issue.RuleId == "API002");
+            Assert.Contains(issues, issue =>
+                issue.RuleId == "API003"
+                && issue.Severity == IssueSeverity.Warning
+                && issue.WhyDetected?.Contains("Project intent: Api", StringComparison.Ordinal) == true);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ApiReadinessAnalyzer_ControllerApiStillReceivesSwaggerReadinessWarning()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"dotdet-api-intent-controller-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+
+        try
+        {
+            var issues = AnalyzeApiReadinessProject(
+                tempRoot,
+                "Orders.Api",
+                """
+                var builder = WebApplication.CreateBuilder(args);
+                builder.Services.AddControllers();
+                var app = builder.Build();
+                app.MapControllers();
+                app.Run();
+                """,
+                ("Controllers/OrdersController.cs", """
+                using Microsoft.AspNetCore.Mvc;
+
+                [ApiController]
+                [Route("api/orders")]
+                public sealed class OrdersController : ControllerBase
+                {
+                    [HttpGet]
+                    public IActionResult Get() => Ok();
+                }
+                """));
+
+            Assert.DoesNotContain(issues, issue => issue.RuleId == "API002");
+            Assert.Contains(issues, issue =>
+                issue.RuleId == "API003"
+                && issue.Severity == IssueSeverity.Warning
+                && issue.WhyDetected?.Contains("Project intent: Api", StringComparison.Ordinal) == true);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ApiReadinessAnalyzer_MixedUiAndApiHostKeepsApiReadinessChecks()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"dotdet-api-intent-mixed-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+
+        try
+        {
+            var issues = AnalyzeApiReadinessProject(
+                tempRoot,
+                "Portal.Web",
+                """
+                var builder = WebApplication.CreateBuilder(args);
+                builder.Services.AddControllersWithViews();
+                var app = builder.Build();
+                app.MapControllerRoute(
+                    name: "default",
+                    pattern: "{controller=Home}/{action=Index}/{id?}");
+                app.MapControllers();
+                app.Run();
+                """,
+                ("Views/Home/Index.cshtml", "<h1>Portal</h1>"),
+                ("Controllers/StatusController.cs", """
+                using Microsoft.AspNetCore.Mvc;
+
+                [ApiController]
+                [Route("api/status")]
+                public sealed class StatusController : ControllerBase
+                {
+                    [HttpGet]
+                    public IActionResult Get() => Ok();
+                }
+                """));
+
+            Assert.DoesNotContain(issues, issue => issue.RuleId == "API002");
+            Assert.Contains(issues, issue =>
+                issue.RuleId == "API003"
+                && issue.Severity == IssueSeverity.Warning
+                && issue.WhyDetected?.Contains("Project intent: MixedApiAndWebUi", StringComparison.Ordinal) == true);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ApiReadinessAnalyzer_MixedUiAndMinimalApiHostKeepsSwaggerReadinessWarning()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"dotdet-api-intent-mixed-minimal-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+
+        try
+        {
+            var issues = AnalyzeApiReadinessProject(
+                tempRoot,
+                "Portal.Web",
+                """
+                var builder = WebApplication.CreateBuilder(args);
+                builder.Services.AddControllersWithViews();
+                var app = builder.Build();
+                app.MapControllerRoute(
+                    name: "default",
+                    pattern: "{controller=Home}/{action=Index}/{id?}");
+                app.MapGet("/api/status", () => Results.Ok());
+                app.Run();
+                """,
+                ("Views/Home/Index.cshtml", "<h1>Portal</h1>"));
+
+            Assert.Contains(issues, issue =>
+                issue.RuleId == "API003"
+                && issue.Severity == IssueSeverity.Warning
+                && issue.WhyDetected?.Contains("Project intent: MixedApiAndWebUi", StringComparison.Ordinal) == true);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ApiReadinessAnalyzer_MixedUiAndApiRouteActionsKeepSwaggerReadinessWarning()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"dotdet-api-intent-mixed-route-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+
+        try
+        {
+            var issues = AnalyzeApiReadinessProject(
+                tempRoot,
+                "Portal.Web",
+                """
+                var builder = WebApplication.CreateBuilder(args);
+                builder.Services.AddControllersWithViews();
+                var app = builder.Build();
+                app.MapControllerRoute(
+                    name: "default",
+                    pattern: "{controller=Home}/{action=Index}/{id?}");
+                app.Run();
+                """,
+                ("Views/Home/Index.cshtml", "<h1>Portal</h1>"),
+                ("Controllers/StatusController.cs", """
+                using Microsoft.AspNetCore.Mvc;
+
+                [ApiController]
+                [Route("api/status")]
+                public sealed class StatusController : ControllerBase
+                {
+                    [HttpGet]
+                    public IActionResult Get() => Ok();
+                }
+                """));
+
+            Assert.Contains(issues, issue =>
+                issue.RuleId == "API003"
+                && issue.Severity == IssueSeverity.Warning
+                && issue.WhyDetected?.Contains("Project intent: MixedApiAndWebUi", StringComparison.Ordinal) == true);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task AnalyzeAsync_JwtPackageWithoutAuthenticationMiddlewareEscalatesOnlyForProtectedApis()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"dotdet-jwt-severity-{Guid.NewGuid():N}");
@@ -1339,6 +1878,130 @@ public sealed class SemanticAnalysisTests
     }
 
     [Fact]
+    public async Task AnalyzeAsync_DiIgnoresFrameworkProvidedConstructorDependencies()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"dotdet-di-framework-{Guid.NewGuid():N}");
+        var solutionPath = Path.Combine(tempRoot, "DiFramework.slnx");
+        Directory.CreateDirectory(tempRoot);
+
+        try
+        {
+            WriteFile(solutionPath, """
+                <Solution>
+                  <Project Path="src/DiFramework.Api/DiFramework.Api.csproj" />
+                </Solution>
+                """);
+            WriteFile(Path.Combine(tempRoot, "src", "DiFramework.Api", "DiFramework.Api.csproj"), """
+                <Project Sdk="Microsoft.NET.Sdk.Web">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                  </PropertyGroup>
+                </Project>
+                """);
+            WriteFile(Path.Combine(tempRoot, "src", "DiFramework.Api", "Program.cs"), """
+                var builder = WebApplication.CreateBuilder(args);
+                builder.Services.AddControllers();
+                builder.Services.AddScoped<CustomAuthStateProvider>();
+                var app = builder.Build();
+                app.MapControllers();
+                app.Run();
+                """);
+            WriteFile(Path.Combine(tempRoot, "src", "DiFramework.Api", "Services.cs"), """
+                using Microsoft.Extensions.Logging;
+                using Microsoft.Extensions.Options;
+
+                public sealed class BaseUrlConfiguration
+                {
+                    public string BaseUrl { get; set; } = "";
+                }
+
+                public interface ICustomDependency { }
+
+                public sealed class CustomAuthStateProvider
+                {
+                    public CustomAuthStateProvider(
+                        ILogger<CustomAuthStateProvider> logger,
+                        IOptions<BaseUrlConfiguration> options)
+                    {
+                    }
+                }
+                """);
+            WriteFile(Path.Combine(tempRoot, "src", "DiFramework.Api", "Controllers", "SampleController.cs"), """
+                using Microsoft.AspNetCore.Mvc;
+                using Microsoft.Extensions.Logging;
+
+                public sealed class SampleController : ControllerBase
+                {
+                    public SampleController(
+                        ILoggerFactory loggerFactory,
+                        ICustomDependency customDependency)
+                    {
+                    }
+                }
+                """);
+
+            var result = await CreateService().AnalyzeAsync(solutionPath, CancellationToken.None);
+            var di002Issues = result.Issues
+                .Where(issue => issue.RuleId == "DI002")
+                .ToArray();
+
+            Assert.DoesNotContain(di002Issues, issue => issue.Title.Contains("ILogger", StringComparison.OrdinalIgnoreCase));
+            Assert.DoesNotContain(di002Issues, issue => issue.Title.Contains("ILoggerFactory", StringComparison.OrdinalIgnoreCase));
+            Assert.DoesNotContain(di002Issues, issue => issue.Title.Contains("IOptions", StringComparison.OrdinalIgnoreCase));
+            Assert.Contains(di002Issues, issue => issue.Title == "ICustomDependency appears unregistered");
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_DiDoesNotFlagMediatorWhenAddMediatRIsPresent()
+    {
+        var result = await AnalyzeMediatRProjectAsync("builder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(typeof(Program).Assembly));");
+
+        Assert.DoesNotContain(result.Issues, issue =>
+            issue.RuleId == "DI002"
+            && issue.Title.Contains("IMediator", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_DiDoesNotFlagMediatorWhenSourceExtensionWrapsAddMediatR()
+    {
+        var result = await AnalyzeMediatRProjectAsync(
+            "builder.Services.AddApplicationMediator();",
+            """
+            using Microsoft.Extensions.DependencyInjection;
+
+            public static class ApplicationMediatorRegistration
+            {
+                public static IServiceCollection AddApplicationMediator(this IServiceCollection services)
+                {
+                    services.AddMediatR(cfg => cfg.RegisterServicesFromAssemblyContaining<CreateOrderHandler>());
+                    return services;
+                }
+            }
+
+            public sealed class CreateOrderHandler { }
+            """);
+
+        Assert.DoesNotContain(result.Issues, issue =>
+            issue.RuleId == "DI002"
+            && issue.Title.Contains("IMediator", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_DiFlagsMediatorWhenNoMediatRRegistrationEvidenceExists()
+    {
+        var result = await AnalyzeMediatRProjectAsync(string.Empty);
+
+        Assert.Contains(result.Issues, issue =>
+            issue.RuleId == "DI002"
+            && issue.Title == "IMediator appears unregistered");
+    }
+
+    [Fact]
     public async Task AnalyzeAsync_EfPrimaryKeyRuleHonorsInheritedAndConfiguredKeys()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"dotdet-ef-keys-{Guid.NewGuid():N}");
@@ -1430,6 +2093,9 @@ public sealed class SemanticAnalysisTests
 
         var result = await service.AnalyzeAsync(GetSampleSolutionPath(), CancellationToken.None);
 
+        Assert.Equal("Roslyn Semantic Analysis", result.AnalysisFidelity);
+        Assert.False(result.SemanticAnalysisSkipped);
+        Assert.Null(result.SemanticAnalysisSkippedReason);
         Assert.Equal(GetSampleSolutionPath(), result.SolutionPath);
         Assert.Contains(result.SourceFiles, file =>
             file.RelativePath.EndsWith("src/Forge.SampleShop.Api/Program.cs", StringComparison.OrdinalIgnoreCase)
@@ -1531,6 +2197,55 @@ public sealed class SemanticAnalysisTests
         Assert.False(string.IsNullOrWhiteSpace(result.EngineeringAssessment.OverallProductionReadiness));
         Assert.NotEmpty(result.EngineeringAssessment.HighestRisks);
         Assert.NotEmpty(result.EngineeringAssessment.RecommendedPriorities);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_UntrustedArchiveSkipsSemanticProjectLoading()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"dotdet-untrusted-{Guid.NewGuid():N}");
+        var solutionPath = Path.Combine(tempRoot, "Untrusted.slnx");
+        Directory.CreateDirectory(tempRoot);
+
+        try
+        {
+            WriteFile(solutionPath, """
+                <Solution>
+                  <Project Path="src/Untrusted.Api/Untrusted.Api.csproj" />
+                </Solution>
+                """);
+            WriteFile(Path.Combine(tempRoot, "src", "Untrusted.Api", "Untrusted.Api.csproj"), """
+                <Project Sdk="Microsoft.NET.Sdk.Web">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                  </PropertyGroup>
+                </Project>
+                """);
+            WriteFile(Path.Combine(tempRoot, "src", "Untrusted.Api", "Program.cs"), """
+                var builder = WebApplication.CreateBuilder(args);
+                var app = builder.Build();
+                app.MapGet("/api/health", () => Results.Ok());
+                app.Run();
+                """);
+
+            var result = await CreateService().AnalyzeAsync(
+                solutionPath,
+                AnalysisInputTrust.UntrustedArchive,
+                CancellationToken.None);
+
+            Assert.Equal("Safe Syntax Analysis", result.AnalysisFidelity);
+            Assert.True(result.SemanticAnalysisSkipped);
+            Assert.Contains("Semantic project loading was skipped", result.SemanticAnalysisSkippedReason);
+            Assert.DoesNotContain(result.Issues, issue =>
+                issue.DetectionMethod == IssueEnrichmentService.RoslynSemanticAnalysis);
+            Assert.Contains(result.ProjectGraph.Projects, project => project.Name == "Untrusted.Api");
+            Assert.Contains(result.SourceFiles, file =>
+                file.RelativePath == "src/Untrusted.Api/Program.cs"
+                && file.Content.Contains("MapGet", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
     }
 
     [Fact]
@@ -1711,6 +2426,121 @@ public sealed class SemanticAnalysisTests
         };
 
         return new EfCoreAnalyzer(new SemanticAnalysisHelper()).Analyze(context);
+    }
+
+    private static IReadOnlyList<AnalysisIssue> AnalyzeApiReadinessProject(
+        string root,
+        string projectName,
+        string programSource,
+        params (string RelativePath, string Content)[] additionalFiles)
+    {
+        var projectDirectory = Path.Combine(root, "src", projectName);
+        var projectPath = Path.Combine(projectDirectory, $"{projectName}.csproj");
+        WriteFile(projectPath, """
+            <Project Sdk="Microsoft.NET.Sdk.Web">
+              <PropertyGroup>
+                <TargetFramework>net9.0</TargetFramework>
+              </PropertyGroup>
+            </Project>
+            """);
+        WriteFile(Path.Combine(projectDirectory, "Program.cs"), programSource);
+
+        foreach (var (relativePath, content) in additionalFiles)
+        {
+            WriteFile(Path.Combine(projectDirectory, relativePath), content);
+        }
+
+        var project = CreateAnalyzedProject(projectName, AnalyzerUtilities.PresentationLayer, isWebProject: true, isAspNetCoreEntryPoint: true) with
+        {
+            FilePath = projectPath,
+            DirectoryPath = projectDirectory,
+            Sdk = "Microsoft.NET.Sdk.Web"
+        };
+        var sourceFiles = Directory
+            .EnumerateFiles(projectDirectory, "*.cs", SearchOption.AllDirectories)
+            .Where(path => !AnalyzerUtilities.IsUnderBuildOutput(path))
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .Select(path =>
+            {
+                var text = File.ReadAllText(path);
+                var tree = CSharpSyntaxTree.ParseText(text, path: path);
+                return new SourceFileContext
+                {
+                    Project = project,
+                    FilePath = AnalyzerUtilities.NormalizePath(path),
+                    Text = text,
+                    Root = tree.GetCompilationUnitRoot()
+                };
+            })
+            .ToArray();
+        var context = new SolutionAnalysisContext
+        {
+            SolutionPath = Path.Combine(root, "IntentSample.slnx"),
+            SolutionName = "IntentSample",
+            RootDirectory = root,
+            Projects = [project],
+            SourceFiles = sourceFiles,
+            SemanticProjects = [],
+            SemanticDocuments = [],
+            AppSettingsFiles = []
+        };
+
+        return new ApiReadinessAnalyzer(new SemanticAnalysisHelper()).Analyze(context);
+    }
+
+    private static async Task<AnalysisResult> AnalyzeMediatRProjectAsync(
+        string mediatRRegistrationSource,
+        string? extensionSource = null)
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"dotdet-mediatr-{Guid.NewGuid():N}");
+        var solutionPath = Path.Combine(tempRoot, "MediatRSample.slnx");
+        Directory.CreateDirectory(tempRoot);
+
+        try
+        {
+            WriteFile(solutionPath, """
+                <Solution>
+                  <Project Path="src/MediatRSample.Api/MediatRSample.Api.csproj" />
+                </Solution>
+                """);
+            WriteFile(Path.Combine(tempRoot, "src", "MediatRSample.Api", "MediatRSample.Api.csproj"), """
+                <Project Sdk="Microsoft.NET.Sdk.Web">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                  </PropertyGroup>
+                </Project>
+                """);
+            WriteFile(Path.Combine(tempRoot, "src", "MediatRSample.Api", "Program.cs"), $$"""
+                var builder = WebApplication.CreateBuilder(args);
+                builder.Services.AddControllers();
+                {{mediatRRegistrationSource}}
+                var app = builder.Build();
+                app.MapControllers();
+                app.Run();
+                """);
+            WriteFile(Path.Combine(tempRoot, "src", "MediatRSample.Api", "Controllers", "OrdersController.cs"), """
+                using MediatR;
+                using Microsoft.AspNetCore.Mvc;
+
+                public sealed class OrdersController : ControllerBase
+                {
+                    public OrdersController(IMediator mediator)
+                    {
+                    }
+                }
+                """);
+
+            if (!string.IsNullOrWhiteSpace(extensionSource))
+            {
+                WriteFile(Path.Combine(tempRoot, "src", "MediatRSample.Api", "MediatorRegistration.cs"), extensionSource);
+            }
+
+            return await CreateService().AnalyzeAsync(solutionPath, CancellationToken.None);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
     }
 
     private static SolutionAnalysisService CreateService()
@@ -2056,5 +2886,20 @@ public sealed class SemanticAnalysisTests
         {
             return Task.FromResult(handler(request));
         }
+    }
+
+    private sealed class TestWebHostEnvironment : IWebHostEnvironment
+    {
+        public string EnvironmentName { get; set; } = Environments.Development;
+
+        public string ApplicationName { get; set; } = "Forge.Api.Tests";
+
+        public string WebRootPath { get; set; } = Directory.GetCurrentDirectory();
+
+        public IFileProvider WebRootFileProvider { get; set; } = new NullFileProvider();
+
+        public string ContentRootPath { get; set; } = Directory.GetCurrentDirectory();
+
+        public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
     }
 }

@@ -19,6 +19,8 @@ import {
   Filter,
   FolderGit2,
   Info,
+  BookOpen,
+  CircleHelp,
   FolderSearch,
   GitBranch,
   LayoutDashboard,
@@ -46,8 +48,8 @@ type FindingDisposition = 'Open' | 'Ignore' | 'False Positive' | 'Accepted Risk'
 type ProjectFilter = 'All' | string
 type SortMode = 'Severity' | 'Category' | 'Project' | 'File'
 type AnalysisMode = 'path' | 'zip'
-type AppPage = 'Overview' | 'Findings' | 'Code Explorer' | 'Architecture' | 'Rule Explorer' | 'Settings'
-type StartPage = 'Home' | 'Docs' | 'Contact' | 'Changelog' | 'Dashboard' | 'Analyze' | 'Reports' | 'Rules' | 'Settings'
+type AppPage = 'Overview' | 'Findings' | 'Code Explorer' | 'Architecture' | 'Rule Explorer' | 'Settings' | 'Docs' | 'Contact'
+type StartPage = 'Home' | 'Docs' | 'Contact' | 'Changelog' | 'Dashboard' | 'Analyze' | 'Reports' | 'Settings'
 type AnalyzeTab = 'GitHub Repository' | 'Upload ZIP' | 'Sample Project'
 type ResizePanel = 'explorer' | 'guide'
 type DensityMode = 'Compact' | 'Comfortable'
@@ -236,6 +238,9 @@ type AnalysisResult = {
   isHistoricalSnapshot?: boolean
   sourcePreviewAvailable?: boolean
   sourcePreviewUnavailableReason?: string
+  analysisFidelity?: string
+  semanticAnalysisSkipped?: boolean
+  semanticAnalysisSkippedReason?: string
   architectureMap?: ArchitectureMap
   engineeringAssessment?: EngineeringAssessmentSummary
   solutionPath?: string
@@ -279,7 +284,8 @@ type StoredWorkbenchState = {
 
 type AuthUser = {
   githubUserId: string
-  githubUsername: string
+  githubUsername?: string
+  gitHubUsername?: string
   displayName?: string
   email?: string
   avatarUrl?: string
@@ -290,6 +296,25 @@ type AuthUser = {
 type AuthMeResponse = {
   isAuthenticated: boolean
   user: AuthUser | null
+}
+
+function normalizeAuthUser(user: AuthUser | null) {
+  if (!user) {
+    return null
+  }
+
+  return {
+    ...user,
+    githubUsername: user.githubUsername || user.gitHubUsername || '',
+  }
+}
+
+function GitHubMark({ className = 'h-4 w-4' }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+      <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82A7.65 7.65 0 0 1 8 3.87c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z" />
+    </svg>
+  )
 }
 
 type AnalysisSourceType = 'GitHubRepo' | 'ZipUpload' | 'SampleProject' | 'LocalDevPath'
@@ -476,7 +501,8 @@ function App() {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const activeIssues = useMemo(() => (result ? getOpenFindings(result, findingDispositions) : []), [findingDispositions, result])
+  const openIssues = useMemo(() => (result ? getOpenFindings(result, findingDispositions) : []), [findingDispositions, result])
+  const activeIssues = useMemo(() => openIssues.filter(isActiveProductionFinding), [openIssues])
   const summaryResult = useMemo(() => (result ? rebuildAnalysisResultForActiveFindings(result, activeIssues) : null), [activeIssues, result])
   const severityCounts = useMemo(() => getSeverityCounts(activeIssues), [activeIssues])
   const projectIssueCounts = useMemo(() => getProjectIssueCounts(activeIssues), [activeIssues])
@@ -584,7 +610,7 @@ function App() {
           return
         }
 
-        setAuthUser(auth.isAuthenticated ? auth.user : null)
+        setAuthUser(auth.isAuthenticated ? normalizeAuthUser(auth.user) : null)
         if (auth.isAuthenticated && window.location.pathname === '/') {
           navigateToPath('/dashboard', true)
           setStartPage('Dashboard')
@@ -624,6 +650,12 @@ function App() {
   }, [authUser, refreshHistory])
 
   useEffect(() => {
+    if (!result) {
+      setRuleCatalog([])
+      setRuleCatalogError(null)
+      return
+    }
+
     let cancelled = false
 
     fetch(`${API_BASE_URL}/api/rules`)
@@ -651,7 +683,7 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [result])
 
   useEffect(() => {
     localStorage.setItem(densityStorageKey, density)
@@ -1206,9 +1238,9 @@ function App() {
             showGutterMarkers={showGutterMarkers}
             showMinimapMarkers={showMinimapMarkers}
           />
-        ) : !authUser && startPage === 'Docs' ? (
+        ) : startPage === 'Docs' ? (
           <DocsPage />
-        ) : !authUser && startPage === 'Contact' ? (
+        ) : startPage === 'Contact' ? (
           <ContactPage />
         ) : !authUser && startPage === 'Changelog' ? (
           <ChangelogPage />
@@ -1261,15 +1293,6 @@ function App() {
             onRefresh={refreshHistory}
             onRerun={rerunHistoryReport}
             onView={openHistoryReport}
-          />
-        ) : startPage === 'Rules' ? (
-          <RuleExplorerPage
-            currentIssues={[]}
-            error={ruleCatalogError}
-            onOpenIssue={() => undefined}
-            onSelectRule={setSelectedRuleId}
-            rules={ruleCatalog}
-            selectedRuleId={selectedRuleId}
           />
         ) : (
           <HomePage
@@ -1374,6 +1397,14 @@ function App() {
               showMinimapMarkers={showMinimapMarkers}
             />
           ) : null}
+
+          {activePage === 'Docs' ? (
+            <DocsPage />
+          ) : null}
+
+          {activePage === 'Contact' ? (
+            <ContactPage />
+          ) : null}
         </div>
       )}
     </AppShell>
@@ -1440,15 +1471,16 @@ function AppShell({
         { page: 'Dashboard', icon: LayoutDashboard, label: 'Dashboard' },
         { page: 'Analyze', icon: FolderSearch, label: 'Analyze' },
         { page: 'Reports', icon: FileText, label: 'Reports' },
-        { page: 'Rules', icon: ListChecks, label: 'Rules' },
       ]
     : [
         { page: 'Home', icon: LayoutDashboard, label: 'Home' },
       ]
   const issueCount = result?.issues.length ?? 0
   const statusText = isLoading ? 'Analyzing' : result ? 'Analysis ready' : 'Ready'
-  const displayName = authUser?.displayName || authUser?.githubUsername
+  const displayName = authUser?.displayName || authUser?.githubUsername || 'GitHub user'
+  const githubHandle = authUser?.githubUsername?.replace(/^@/, '').trim()
   const [isExportMenuOpen, setExportMenuOpen] = useState(false)
+  const [isProductMenuOpen, setProductMenuOpen] = useState(false)
 
   const isPublicPage = startPage === 'Home' || startPage === 'Docs' || startPage === 'Contact' || startPage === 'Changelog'
 
@@ -1457,16 +1489,42 @@ function AppShell({
       <main className={`night-mode det-public-shell min-h-screen overflow-auto text-slate-100 ${density === 'Comfortable' ? 'density-comfortable' : 'density-compact'}`}>
         <header className="det-public-topbar">
           <div className="det-public-topbar-inner">
-            <div className="flex min-w-0 items-center gap-3">
+            <a
+              href="/"
+              className="det-public-brand"
+              aria-label="DotDet home"
+              onClick={(event) => {
+                event.preventDefault()
+                onStartPageChange('Home')
+              }}
+            >
               <img src="/dotdet-logo.png" alt=".DET logo" className="h-8 w-8 object-contain" />
               <div className="min-w-0">
-                <h1 className="text-sm font-semibold leading-5 text-slate-100">.DET</h1>
+                <div className="text-sm font-semibold leading-5 text-slate-100">DotDet</div>
                 <div className="truncate text-[11px] text-slate-500">.NET Development Engineering Toolkit</div>
               </div>
-            </div>
+            </a>
             <nav className="det-public-nav" aria-label="Landing navigation">
-              <div className="det-product-menu">
-                <button type="button" className="det-public-nav-link det-product-menu-trigger" aria-haspopup="true">
+              <div
+                className={`det-product-menu ${isProductMenuOpen ? 'det-product-menu-open' : ''}`}
+                onBlur={(event) => {
+                  if (!event.currentTarget.contains(event.relatedTarget)) {
+                    setProductMenuOpen(false)
+                  }
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape') {
+                    setProductMenuOpen(false)
+                  }
+                }}
+              >
+                <button
+                  type="button"
+                  className="det-public-nav-link det-product-menu-trigger"
+                  aria-expanded={isProductMenuOpen}
+                  aria-haspopup="menu"
+                  onClick={() => setProductMenuOpen((current) => !current)}
+                >
                   Product
                   <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
                 </button>
@@ -1477,21 +1535,29 @@ function AppShell({
                     role="menuitem"
                     onClick={(event) => {
                       event.preventDefault()
+                      setProductMenuOpen(false)
                       onStartPageChange('Home')
                     }}
                   >
-                    <span className="det-product-menu-label">DotDet</span>
-                    <span className="det-product-menu-description">Analyze .NET production readiness</span>
+                    <Code2 className="det-product-menu-icon" aria-hidden="true" />
+                    <span>
+                      <span className="det-product-menu-label">DotDet</span>
+                      <span className="det-product-menu-description">Production-readiness analysis</span>
+                    </span>
                   </a>
-                  <a href={SCHEMA_ARCHITECT_URL} className="det-product-menu-item" role="menuitem">
-                    <span className="det-product-menu-label">Schema Architect</span>
-                    <span className="det-product-menu-description">Design schemas and generate .NET foundations</span>
+                  <a href={SCHEMA_ARCHITECT_URL} className="det-product-menu-item" role="menuitem" rel="noreferrer">
+                    <Database className="det-product-menu-icon" aria-hidden="true" />
+                    <span>
+                      <span className="det-product-menu-label">Schema Architect</span>
+                      <span className="det-product-menu-description">Schema design and .NET foundations</span>
+                    </span>
                   </a>
                 </div>
               </div>
               <a
                 href="/docs"
-                className="det-public-nav-link"
+                className={`det-public-nav-link ${startPage === 'Docs' ? 'det-public-nav-link-active' : ''}`}
+                aria-current={startPage === 'Docs' ? 'page' : undefined}
                 onClick={(event) => {
                   event.preventDefault()
                   onStartPageChange('Docs')
@@ -1501,7 +1567,8 @@ function AppShell({
               </a>
               <a
                 href="/changelog"
-                className="det-public-nav-link"
+                className={`det-public-nav-link ${startPage === 'Changelog' ? 'det-public-nav-link-active' : ''}`}
+                aria-current={startPage === 'Changelog' ? 'page' : undefined}
                 onClick={(event) => {
                   event.preventDefault()
                   onStartPageChange('Changelog')
@@ -1509,12 +1576,13 @@ function AppShell({
               >
                 Changelog
               </a>
-              <a href={DOTDET_REPOSITORY_URL} className="det-public-nav-link">GitHub</a>
+              <a href={DOTDET_REPOSITORY_URL} className="det-public-nav-link" rel="noreferrer">GitHub</a>
             </nav>
             {authLoading ? (
               <span className="text-xs text-slate-500">Checking session</span>
             ) : (
               <button type="button" onClick={onLogin} className="det-public-login-button">
+                <GitHubMark className="h-3.5 w-3.5" />
                 Login with GitHub
               </button>
             )}
@@ -1539,12 +1607,13 @@ function AppShell({
               className="h-8 w-8 border border-black/20 bg-transparent object-contain"
             />
             <div className="min-w-0">
-              <div className="text-sm font-semibold leading-5 text-slate-100">.DET Toolkit</div>
-              <div className="truncate text-[11px] text-slate-500">Preview build</div>
+              <div className="text-sm font-semibold leading-5 text-slate-100">DotDet</div>
+              <div className="truncate text-[11px] text-slate-500">.NET Development Engineering</div>
             </div>
           </div>
 
           <nav className="det-sidebar-nav" aria-label="Primary navigation">
+            <div className="det-sidebar-section-label">{result ? 'Analysis' : 'Workspace'}</div>
             {result ? (
               navItems.map((item) => (
                 <button
@@ -1557,6 +1626,7 @@ function AppShell({
                 >
                   <item.icon className="h-4 w-4" aria-hidden="true" />
                   <span>{item.label}</span>
+                  {item.page === 'Findings' && issueCount > 0 ? <span className="det-sidebar-nav-count">{issueCount}</span> : null}
                 </button>
               ))
             ) : (
@@ -1577,6 +1647,19 @@ function AppShell({
           </nav>
 
           <div className="det-sidebar-utility">
+            {authUser ? (
+              <div className="det-sidebar-account" title={githubHandle ? `@${githubHandle}` : displayName}>
+                {authUser.avatarUrl ? (
+                  <img src={authUser.avatarUrl} alt="" className="det-sidebar-account-avatar" />
+                ) : (
+                  <Circle className="det-sidebar-account-avatar det-sidebar-account-fallback" aria-hidden="true" />
+                )}
+                <div className="min-w-0">
+                  <div className="truncate text-xs font-semibold text-slate-100">{displayName}</div>
+                  <div className="truncate text-[11px] text-slate-400">{githubHandle ? `@${githubHandle}` : 'GitHub connected'}</div>
+                </div>
+              </div>
+            ) : null}
             {result ? (
               <>
                 <button type="button" aria-label="New Analysis" title="New Analysis" onClick={onRunAnalysisAgain} className="det-sidebar-nav-item">
@@ -1615,35 +1698,51 @@ function AppShell({
         <section className="det-main-shell">
           <header className="det-command-bar">
             <div className={commandBarClass}>
-              <div className="flex min-w-0 items-center gap-3">
-              <img
-                src="/dotdet-logo.png"
-                alt=".DET logo"
-                className={`${commandBarMode === 'Expanded' ? 'h-7 w-7' : 'h-6 w-6'} border border-black/20 bg-transparent object-contain`}
-              />
               <div className="min-w-0">
-                <h1 className={`${commandBarMode === 'Expanded' ? 'text-base leading-6' : 'text-sm leading-5'} font-semibold text-slate-100`}>.DET</h1>
-                <p className="truncate text-xs text-slate-500">
-                  {result ? `${result.solutionName} - analyzed ${new Date(result.analyzedAt).toLocaleString()}` : '.NET Development Engineering Toolkit'}
+                <p className="truncate text-xs text-slate-400">
+                  {result ? `${result.solutionName} - analyzed ${new Date(result.analyzedAt).toLocaleString()}` : statusText}
                 </p>
               </div>
-            </div>
             <div className="flex flex-wrap items-center gap-1.5">
               {authLoading ? (
                 <span className="px-2 text-xs text-slate-500">Checking session</span>
-              ) : authUser ? (
-                <div className="flex items-center gap-2 border border-slate-700 bg-[#1b1f1d] px-2 py-1">
-                  {authUser.avatarUrl ? (
-                    <img src={authUser.avatarUrl} alt="" className="h-5 w-5" />
-                  ) : (
-                    <Circle className="h-4 w-4 text-slate-500" aria-hidden="true" />
-                  )}
-                  <span className="max-w-40 truncate text-xs font-medium text-slate-200">{displayName}</span>
-                </div>
               ) : (
-                <button type="button" onClick={onLogin} className={commandButtonClass}>
-                  Login with GitHub
-                </button>
+                <>
+                  {authUser ? null : (
+                    <button type="button" onClick={onLogin} className={commandButtonClass}>
+                      <GitHubMark className={commandIconClass} />
+                      Login with GitHub
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (result) {
+                        onPageChange('Contact')
+                      } else {
+                        onStartPageChange('Contact')
+                      }
+                    }}
+                    className={commandButtonClass}
+                  >
+                    <CircleHelp className={commandIconClass} aria-hidden="true" />
+                    Help
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (result) {
+                        onPageChange('Docs')
+                      } else {
+                        onStartPageChange('Docs')
+                      }
+                    }}
+                    className={commandButtonClass}
+                  >
+                    <BookOpen className={commandIconClass} aria-hidden="true" />
+                    About
+                  </button>
+                </>
               )}
               {result ? (
                 <>
@@ -1721,21 +1820,24 @@ function AppShell({
   )
 }
 
-const landingProofCards = [
+const landingProofRows = [
   {
+    number: '01',
     icon: FileSearch,
-    title: 'Source-linked evidence',
-    body: 'Findings include project, file, line, detection method, confidence, and remediation context.',
+    title: 'Evidence-first findings',
+    body: 'Project, file, line, confidence, detection method, and recommendation.',
   },
   {
+    number: '02',
     icon: Braces,
-    title: 'Built for ASP.NET Core',
-    body: 'Rules focus on architecture boundaries, DI reliability, EF Core migrations, security configuration, and API readiness.',
+    title: 'ASP.NET Core production focus',
+    body: 'Architecture boundaries, DI reliability, EF Core migrations, security configuration, and API readiness.',
   },
   {
+    number: '03',
     icon: FileDown,
-    title: 'Professional reports',
-    body: 'Export JSON, Markdown, and standalone HTML reports for engineering review and release readiness.',
+    title: 'Review-ready output',
+    body: 'Saved history plus HTML, Markdown, and JSON exports for engineering review.',
   },
 ] as const
 
@@ -1772,15 +1874,27 @@ const landingCapabilities = [
   },
 ] as const
 
-const heroBinaryStreams = [
-  '0\n1\n1\n0\n1\n0\n0\n1\n1\n0\n1\n0\n1\n1',
-  '1\n0\n0\n1\n0\n1\n1\n0\n0\n1\n0\n1\n0\n0',
-  '0\n0\n1\n1\n0\n1\n0\n1\n1\n0\n0\n1\n1\n0',
-  '1\n1\n0\n0\n1\n0\n1\n0\n0\n1\n1\n0\n0\n1',
-  '0\n1\n0\n1\n1\n0\n1\n0\n1\n0\n0\n1\n0\n1',
-  '1\n0\n1\n0\n0\n1\n0\n1\n0\n1\n1\n0\n1\n0',
-  '0\n1\n1\n1\n0\n0\n1\n0\n1\n0\n1\n0\n0\n1',
-  '1\n0\n0\n0\n1\n1\n0\n1\n0\n1\n0\n1\n1\n0',
+const landingWorkflow = [
+  {
+    number: '01',
+    title: 'Connect a solution',
+    body: 'Choose a GitHub repository, upload a ZIP, or run the bundled sample.',
+  },
+  {
+    number: '02',
+    title: 'Inspect the evidence',
+    body: 'Review production risks against the exact project, file, symbol, and line.',
+  },
+  {
+    number: '03',
+    title: 'Apply the guidance',
+    body: 'Move from finding to recommended pattern, implementation, and Microsoft documentation.',
+  },
+  {
+    number: '04',
+    title: 'Share the assessment',
+    body: 'Export an engineering report for pull requests, release reviews, and remediation planning.',
+  },
 ] as const
 
 function HomePage({
@@ -1792,61 +1906,126 @@ function HomePage({
 }) {
   return (
     <section id="product" className="det-public-landing">
-      <div className="det-public-binary-rain" aria-hidden="true">
-        {[...heroBinaryStreams, ...heroBinaryStreams, ...heroBinaryStreams].map((stream, index) => (
-          <span key={index}>{stream}</span>
-        ))}
-      </div>
-      <div className="det-landing-page">
-        <div className="det-landing-hero">
-          <div className="det-landing-copy">
-            <h2 className="det-landing-title">Find production risks in your ASP.NET Core apps before they ship.</h2>
-            <p className="det-landing-subtitle">
-              DotDet analyzes architecture, dependency injection, EF Core, security configuration, and API readiness, then turns the results into source-linked engineering reports.
-            </p>
-            <div className="det-landing-actions">
-              <button type="button" onClick={onLogin} className="det-primary-cta det-landing-primary-cta">
-                Get Started
-                <ChevronRight className="h-4 w-4" aria-hidden="true" />
-              </button>
-              <button type="button" onClick={onAnalyzeSample} className="det-secondary-cta det-landing-secondary-cta">
-                Analyze Sample
-              </button>
+      <div className="det-landing-hero-band">
+        <div className="det-landing-page det-landing-page-hero">
+          <div className="det-landing-hero">
+            <div className="det-landing-copy">
+              <div className="det-landing-eyebrow"><span />Production assurance for ASP.NET Core</div>
+              <h1 className="det-landing-title">Production readiness, grounded in your code.</h1>
+              <p className="det-landing-subtitle">
+                DotDet turns Roslyn symbols, MSBuild project structure, configuration, and framework usage into an engineering assessment your team can trust and act on.
+              </p>
+              <div className="det-landing-actions">
+                <button type="button" onClick={onLogin} className="det-primary-cta det-landing-primary-cta">
+                  <GitHubMark className="h-4 w-4" />
+                  Login with GitHub
+                  <ChevronRight className="h-4 w-4" aria-hidden="true" />
+                </button>
+                <button type="button" onClick={onAnalyzeSample} className="det-secondary-cta det-landing-secondary-cta">
+                  <Play className="h-3.5 w-3.5" aria-hidden="true" />
+                  Run sample analysis
+                </button>
+              </div>
+              <div className="det-landing-assurances" aria-label="Product assurances">
+                <span><CheckCircle2 aria-hidden="true" />Source-linked evidence</span>
+                <span><CheckCircle2 aria-hidden="true" />Deterministic assessment</span>
+                <span><CheckCircle2 aria-hidden="true" />No application execution</span>
+              </div>
             </div>
-            <p className="det-landing-proof-line">
-              Analyze ZIP uploads, GitHub repositories, or the sample ASP.NET Core project.
-            </p>
+
+            <div className="det-hero-video-shell">
+              <video
+                className="det-hero-video"
+                autoPlay
+                muted
+                loop
+                playsInline
+                preload="metadata"
+                aria-label="DotDet production-readiness workbench demonstration"
+              >
+                <source src="/dotdetvideo.mp4" type="video/mp4" />
+              </video>
+            </div>
           </div>
         </div>
+      </div>
 
-        <div id="docs" className="det-proof-grid">
-          {landingProofCards.map((card) => (
-            <article key={card.title} className="det-proof-card">
-              <div className="det-proof-card-head">
-                <card.icon className="det-proof-card-icon" aria-hidden="true" />
-                <h3 className="det-proof-card-title">{card.title}</h3>
-              </div>
-              <p className="det-proof-card-body">{card.body}</p>
-            </article>
-          ))}
+      <div className="det-landing-signal-strip">
+        <div className="det-landing-signal-strip-inner">
+          <div><span>ANALYSIS ENGINE</span><strong>Roslyn + MSBuild</strong></div>
+          <div><span>PRODUCTION DOMAINS</span><strong>Architecture through API readiness</strong></div>
+          <div><span>ENGINEERING OUTPUT</span><strong>Evidence, guidance, and review-ready reports</strong></div>
         </div>
+      </div>
+
+      <div className="det-landing-page det-landing-content-page">
+        <section id="docs" className="det-proof-section" aria-labelledby="landing-proof-title">
+          <div className="det-proof-intro">
+            <div className="det-section-kicker">A different kind of analyzer</div>
+            <h2 id="landing-proof-title">Why DotDet is different</h2>
+            <p>
+              Detection is only useful when an engineer can verify it. DotDet keeps evidence, confidence, production impact, and remediation in the same workflow.
+            </p>
+          </div>
+          <div className="det-proof-list">
+            {landingProofRows.map((row) => (
+              <article key={row.title} className="det-proof-row">
+                <span className="det-proof-row-number">{row.number}</span>
+                <row.icon className="det-proof-row-icon" aria-hidden="true" />
+                <div>
+                  <h3>{row.title}</h3>
+                  <p>{row.body}</p>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+
+        <section className="det-landing-workflow" aria-labelledby="landing-workflow-title">
+          <div className="det-landing-workflow-heading">
+            <div className="det-section-kicker">From repository to remediation</div>
+            <h2 id="landing-workflow-title">A workflow built for engineering review.</h2>
+          </div>
+          <div className="det-landing-workflow-list">
+            {landingWorkflow.map((step) => (
+              <article key={step.number} className="det-landing-workflow-step">
+                <span>{step.number}</span>
+                <h3>{step.title}</h3>
+                <p>{step.body}</p>
+              </article>
+            ))}
+          </div>
+        </section>
 
         <section className="det-capability-section" aria-labelledby="landing-capabilities-title">
           <div className="det-capability-section-heading">
-            <h3 id="landing-capabilities-title" className="det-capability-section-title">
-              What DotDet analyzes
-            </h3>
+            <div>
+              <div className="det-section-kicker">Analysis scope</div>
+              <h2 id="landing-capabilities-title" className="det-capability-section-title">The production concerns that matter.</h2>
+            </div>
+            <p>Focused checks for ASP.NET Core teams, with applicability and confidence built into every finding.</p>
           </div>
-          <div className="det-capability-grid">
+          <div className="det-capability-list">
             {landingCapabilities.map((capability) => (
-              <article key={capability.title} className="det-capability-card">
-                <div className="det-capability-card-head">
-                  <capability.icon className="det-capability-icon" aria-hidden="true" />
-                  <h4 className="det-capability-card-title">{capability.title}</h4>
+              <article key={capability.title} className="det-capability-row">
+                <capability.icon className="det-capability-icon" aria-hidden="true" />
+                <div>
+                  <h3 className="det-capability-card-title">{capability.title}</h3>
+                  <p className="det-capability-card-body">{capability.body}</p>
                 </div>
-                <p className="det-capability-card-body">{capability.body}</p>
               </article>
             ))}
+          </div>
+        </section>
+
+        <section className="det-landing-final-cta" aria-labelledby="landing-final-title">
+          <div>
+            <div className="det-section-kicker">Start with real evidence</div>
+            <h2 id="landing-final-title">See what stands between your solution and production.</h2>
+          </div>
+          <div className="det-landing-final-actions">
+            <button type="button" onClick={onLogin} className="det-primary-cta"><GitHubMark className="h-4 w-4" />Login with GitHub <ChevronRight className="h-4 w-4" aria-hidden="true" /></button>
+            <button type="button" onClick={onAnalyzeSample} className="det-secondary-cta">Explore sample project</button>
           </div>
         </section>
       </div>
@@ -2050,7 +2229,7 @@ function DocsPage() {
             <section id="limitations" className="det-docs-section">
               <h3>Current Limitations</h3>
               <p>
-                Some analyzer behavior is still heuristic. Dependency Injection registrations, API/Web project intent, and architecture layer inference are being refined to reduce false positives. Private GitHub repositories, PR comments, checks, and webhooks are not implemented yet.
+                Some analyzer behavior remains heuristic when a solution cannot be loaded semantically. Dependency Injection registrations, API/Web project intent, and architecture layer inference are continually calibrated to reduce false positives. Branch selection, pull-request comments, checks, and webhooks are not implemented yet.
               </p>
             </section>
 
@@ -2127,11 +2306,10 @@ const changelogSections = [
   {
     title: 'Known limitations',
     items: [
-      'private GitHub repositories are not supported yet',
       'branch selection is not supported yet',
       'no PR comments, checks, or webhooks yet',
       'historical reports do not store full source preview',
-      'API/Web UI project classification is still being refined',
+      'some fallback-mode findings remain heuristic when semantic loading is unavailable',
       'local JSON persistence is MVP-oriented',
     ],
   },
@@ -2144,22 +2322,29 @@ function ContactPage() {
         <header className="det-docs-header">
           <div className="det-docs-eyebrow">Contact</div>
           <h2>Contact DotDet</h2>
-          <p>For questions, feedback, or collaboration, contact Cezar Pedroso.</p>
+          <p>Use the channel that matches the work. Product questions can go directly to the maintainer; reproducible defects and analyzer false positives belong in the issue tracker.</p>
         </header>
 
-        <div className="det-contact-grid">
+        <div className="det-contact-list">
           <article className="det-contact-card">
-            <div className="det-contact-card-label">Email</div>
-            <h3>Direct contact</h3>
-            <p>Use email for collaboration, product questions, or general feedback.</p>
-            <a href="mailto:cezarapedroso@gmail.com">cezarapedroso@gmail.com</a>
+            <div>
+              <div className="det-contact-card-label">Email</div>
+              <h3>Product and collaboration</h3>
+              <p>Use email for product questions, engineering collaboration, or responsible disclosure.</p>
+            </div>
+            <a href="mailto:cezarapedroso@gmail.com">
+              cezarpedroso@gmail.com
+              <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+            </a>
           </article>
 
           <article className="det-contact-card">
-            <div className="det-contact-card-label">GitHub Issues</div>
-            <h3>Bugs and feature requests</h3>
-            <p>For bugs, feature requests, or analyzer false positives, open a GitHub issue.</p>
-            <a href={DOTDET_ISSUES_URL}>
+            <div>
+              <div className="det-contact-card-label">GitHub Issues</div>
+              <h3>Defects and analyzer feedback</h3>
+              <p>Include the rule ID, project type, expected behavior, and a minimal reproduction when possible.</p>
+            </div>
+            <a href={DOTDET_ISSUES_URL} rel="noreferrer">
               Open GitHub Issues
               <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
             </a>
@@ -2177,7 +2362,7 @@ function ChangelogPage() {
         <header className="det-docs-header">
           <div className="det-docs-eyebrow">Changelog</div>
           <h2>v0.1 Preview</h2>
-          <p>Initial DotDet MVP focused on production-readiness analysis for ASP.NET Core applications.</p>
+          <p>Current preview capabilities for production-readiness analysis, source-linked engineering guidance, and repository review workflows.</p>
         </header>
 
         <div className="det-changelog-timeline">
@@ -2206,16 +2391,19 @@ function PublicFooter({ onNavigate }: { onNavigate: (page: StartPage) => void })
   return (
     <footer className="det-public-footer">
       <div className="det-public-footer-inner">
-        <div>
-          <div className="det-public-footer-brand">DotDet</div>
-          <p>Production-readiness analysis for ASP.NET Core applications.</p>
+        <div className="det-public-footer-lockup">
+          <img src="/dotdet-logo.png" alt="" className="det-public-footer-logo" />
+          <div>
+            <div className="det-public-footer-brand">DotDet</div>
+            <p>.NET production-readiness analysis with source-linked evidence.</p>
+          </div>
         </div>
         <nav aria-label="Footer navigation">
           <a href="/docs" onClick={(event) => navigate(event, 'Docs')}>Docs</a>
           <a href="/changelog" onClick={(event) => navigate(event, 'Changelog')}>Changelog</a>
           <a href="/contact" onClick={(event) => navigate(event, 'Contact')}>Contact</a>
-          <a href={DOTDET_REPOSITORY_URL}>GitHub</a>
-          <a href={DOTDET_ISSUES_URL}>Issues</a>
+          <a href={DOTDET_REPOSITORY_URL} rel="noreferrer">GitHub</a>
+          <a href={DOTDET_ISSUES_URL} rel="noreferrer">Issues</a>
         </nav>
       </div>
     </footer>
@@ -2256,6 +2444,7 @@ function DashboardPage({
   onRerunHistory: (id: string) => void
 }) {
   const displayName = authUser?.displayName || authUser?.githubUsername || 'Developer'
+  const githubHandle = authUser?.githubUsername?.replace(/^@/, '').trim()
   const latest = history[0]
   const totalOpenFindings = history.reduce((sum, item) => sum + item.openFindingCount, 0)
   const recentReports = history.slice(0, 5)
@@ -2266,6 +2455,7 @@ function DashboardPage({
         <header className="det-overview-title">
           <div className="text-xs font-semibold uppercase tracking-wide text-[#2ea043]">Dashboard</div>
           <h1 className="mt-2 text-2xl font-semibold text-slate-950">Welcome, {displayName}</h1>
+          {githubHandle ? <div className="mt-1 font-mono text-xs text-slate-500">@{githubHandle}</div> : null}
           <p className="mt-2 max-w-2xl text-sm text-slate-500">
             Start a new analysis or reopen a previous production-readiness report.
           </p>
@@ -2320,7 +2510,7 @@ function DashboardPage({
               )}
               <div className="min-w-0">
                 <div className="truncate text-sm font-semibold text-slate-950">{displayName}</div>
-                <div className="truncate text-xs text-slate-500">@{authUser?.githubUsername}</div>
+                {githubHandle ? <div className="truncate text-xs text-slate-500">@{githubHandle}</div> : null}
               </div>
             </div>
             <p className="mt-3 text-xs leading-5 text-slate-500">
@@ -2367,7 +2557,7 @@ function DashboardPage({
 }
 
 function analysisActionClass(active: boolean) {
-  return `flex min-h-24 flex-col items-start gap-1.5 border p-3 text-left transition hover:border-[#2ea043] hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60 ${
+  return `det-dashboard-action flex min-h-24 flex-col items-start gap-1.5 border p-3 text-left transition hover:border-[#2ea043] hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60 ${
     active ? 'border-teal-600 bg-slate-50' : 'border-slate-200 bg-white'
   }`
 }
@@ -2477,14 +2667,14 @@ function AnalyzePage({
           </p>
         </header>
 
-        <div className="mt-5 flex flex-wrap gap-1 border-b border-slate-200">
+        <div className="det-analyze-tabs mt-5 flex flex-wrap gap-1 border-b border-slate-200">
           {tabs.map((tab) => (
             <button
               key={tab}
               type="button"
               onClick={() => onActiveTabChange(tab)}
-              className={`px-3 py-2 text-xs font-semibold transition ${
-                activeTab === tab ? 'border-b-2 border-[#2ea043] text-slate-950' : 'text-slate-500 hover:text-slate-200'
+              className={`det-analyze-tab px-3 py-2 text-xs font-semibold transition ${
+                activeTab === tab ? 'det-analyze-tab-active border-b-2 border-[#2ea043] text-slate-950' : 'text-slate-500 hover:text-slate-200'
               }`}
             >
               {tab}
@@ -2805,8 +2995,15 @@ function HistoryList({
   onRerun: (id: string) => void
   onView: (id: string) => void
 }) {
+  const [openExportId, setOpenExportId] = useState<string | null>(null)
+  const exportFormats: Array<{ format: ExportFormat; label: string }> = [
+    { format: 'HTML', label: 'HTML report' },
+    { format: 'Markdown', label: 'Markdown report' },
+    { format: 'JSON', label: 'JSON data' },
+  ]
+
   return (
-    <div className="mt-4 overflow-hidden border border-slate-200 bg-white">
+    <div className="mt-4 overflow-visible border border-slate-200 bg-white">
       <table className="min-w-full text-left text-xs">
         <thead className="border-b border-slate-200 text-[11px] uppercase tracking-wide text-slate-500">
           <tr>
@@ -2838,13 +3035,48 @@ function HistoryList({
               <td className="px-3 py-2">
                 <div className="flex flex-wrap justify-end gap-1">
                   <button type="button" onClick={() => onView(item.id)} className="det-card-link-button">View</button>
-                  <button type="button" onClick={() => onExport(item.id, 'HTML')} className="det-card-link-button">HTML</button>
-                  {!compact ? (
-                    <>
-                      <button type="button" onClick={() => onExport(item.id, 'Markdown')} className="det-card-link-button">MD</button>
-                      <button type="button" onClick={() => onExport(item.id, 'JSON')} className="det-card-link-button">JSON</button>
-                    </>
-                  ) : null}
+                  <div
+                    className="relative"
+                    onBlur={(event) => {
+                      if (!event.currentTarget.contains(event.relatedTarget)) {
+                        setOpenExportId(null)
+                      }
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Escape') {
+                        setOpenExportId(null)
+                      }
+                    }}
+                  >
+                    <button
+                      type="button"
+                      aria-expanded={openExportId === item.id}
+                      aria-haspopup="menu"
+                      onClick={() => setOpenExportId((current) => current === item.id ? null : item.id)}
+                      className="det-card-link-button"
+                    >
+                      Export
+                      <ChevronDown className="h-3 w-3" aria-hidden="true" />
+                    </button>
+                    {openExportId === item.id ? (
+                      <div role="menu" className="det-history-export-menu">
+                        {exportFormats.map(({ format, label }) => (
+                          <button
+                            key={format}
+                            type="button"
+                            role="menuitem"
+                            onClick={() => {
+                              setOpenExportId(null)
+                              onExport(item.id, format)
+                            }}
+                          >
+                            <Download className="h-3.5 w-3.5" aria-hidden="true" />
+                            {compact && format === 'Markdown' ? 'Markdown' : label}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
                   {item.canRerun ? (
                     <button type="button" onClick={() => onRerun(item.id)} disabled={isLoading} className="det-card-link-button disabled:cursor-not-allowed disabled:opacity-60">
                       Re-run
@@ -2914,7 +3146,7 @@ function AnalysisProgress() {
           const status = index < 3 ? 'completed' : index === 3 ? 'current' : 'pending'
 
           return (
-            <div key={step} className="flex items-center gap-2 text-sm text-slate-300">
+            <div key={step} className={`det-progress-step det-progress-step-${status} flex items-center gap-2 text-sm text-slate-300`}>
               {status === 'completed' ? (
                 <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-500" aria-hidden="true" />
               ) : status === 'current' ? (
@@ -2949,20 +3181,34 @@ function OverviewPage({
   const quickRecommendations = getGroupedRecommendedActions(result.issues)
 
   return (
-    <div className="det-dashboard-page flex-1 overflow-auto px-5 py-7 2xl:px-6">
-      <div className="det-overview-report mx-auto">
-        <header className="det-overview-title">
-          <div className="text-xs font-semibold uppercase tracking-wide text-teal-700">Overview</div>
-          <h1 className="mt-2 text-2xl font-semibold text-slate-950">Engineering readiness report</h1>
-          <p className="mt-2 text-sm text-slate-500">{result.solutionName}</p>
+    <div className="det-overview-page flex-1 overflow-auto">
+      <div className="det-overview-canvas">
+        <header className="det-overview-masthead">
+          <div>
+            <div className="det-overview-kicker">Engineering readiness report</div>
+            <h1>{result.solutionName}</h1>
+            <p>Analyzed {new Date(result.analyzedAt).toLocaleString()} - {projectCount} projects in scope</p>
+          </div>
+          <button type="button" onClick={onOpenFindings} className="det-overview-primary-action">
+            <ListChecks className="h-4 w-4" aria-hidden="true" />
+            Review findings
+            <ChevronRight className="h-4 w-4" aria-hidden="true" />
+          </button>
         </header>
 
         <OverviewSummary projectCount={projectCount} result={result} severityCounts={severityCounts} />
-        <AssessmentSummarySection result={result} severityCounts={severityCounts} />
-        <BiggestRisksSection onOpenFindings={onOpenFindings} result={result} />
+
+        <div className="det-overview-priority-layout">
+          <BiggestRisksSection onOpenFindings={onOpenFindings} result={result} />
+          <RecommendedActionsSection issues={quickRecommendations} onOpenIssue={onOpenIssue} />
+        </div>
+
+        <div className="det-overview-support-layout">
+          <CategoryScoresSection result={result} />
+          <ArchitectureOverviewSection result={result} onOpenArchitecture={onOpenArchitecture} />
+        </div>
+
         <EngineeringAssessmentPanel assessment={result.engineeringAssessment} />
-        <RecommendedActionsSection issues={quickRecommendations} onOpenIssue={onOpenIssue} />
-        <ArchitectureOverviewSection result={result} onOpenArchitecture={onOpenArchitecture} />
       </div>
     </div>
   )
@@ -2981,82 +3227,89 @@ function OverviewSummary({
   const status = getReadinessDecision(result.overallScore, severityCounts)
   const blockerCount = severityCounts.Critical + severityCounts.Error
   const statusTone = status === 'Not Ready' ? 'text-red-700' : status === 'Needs Review' ? 'text-amber-700' : 'text-teal-700'
+  const concerns = getPrimaryConcerns(result)
 
   return (
-    <section className="det-overview-section det-overview-summary">
-      <div className="det-report-section-heading">
-        <h2 className="text-lg font-semibold text-slate-950">Production Readiness</h2>
-        <p className="mt-2 text-sm text-slate-500">Executive status for release readiness and immediate production blockers.</p>
-      </div>
-
-      <div className="det-readiness-panel mt-5">
-        <div className="det-readiness-primary">
-          <div className="det-readiness-stat">
-            <dt>Overall Grade</dt>
-            <dd className="text-6xl">{grade}</dd>
-          </div>
-          <div className="det-readiness-stat">
-            <dt>Score</dt>
-            <dd>
-              {result.overallScore} <span>/ 100</span>
-            </dd>
-          </div>
-          <div className="det-readiness-stat">
-            <dt>Status</dt>
-            <dd className={statusTone}>{status}</dd>
-          </div>
+    <section className="det-readiness-hero" aria-labelledby="readiness-title">
+      <div className="det-readiness-score-pane">
+        <h2 className="det-readiness-label">Production Readiness</h2>
+        <div className="det-readiness-score-line">
+          <strong>{result.overallScore}</strong>
+          <span>/100</span>
+          <em>{grade}</em>
         </div>
-
         <div className="det-readiness-progress">
-          <div className="h-2 overflow-hidden rounded bg-slate-200">
-            <div className={getScoreBarClass(result.overallScore)} style={{ width: `${result.overallScore}%` }} />
+          <div className="det-readiness-progress-track">
+            <div className={`det-readiness-progress-fill ${getScoreBarClass(result.overallScore)}`} style={{ width: `${result.overallScore}%` }} />
           </div>
         </div>
-
-        <dl className="det-readiness-counts">
-          <CompactMetric label="Critical Findings" value={blockerCount} tone={blockerCount > 0 ? 'danger' : 'ok'} />
-          <CompactMetric label="Warnings" value={severityCounts.Warning} tone={severityCounts.Warning > 0 ? 'warn' : 'ok'} />
-          <CompactMetric label="Projects" value={projectCount} tone="neutral" />
-        </dl>
+        <p>Weighted across architecture, dependency injection, EF Core, security, and API readiness.</p>
       </div>
+
+      <div className="det-readiness-decision-pane">
+        <div className="det-readiness-label">Release decision</div>
+        <h2 id="readiness-title" className={statusTone}>{status}</h2>
+        <p>{getOverviewLead(severityCounts)}</p>
+        {result.semanticAnalysisSkipped ? (
+          <p className="det-analysis-fidelity-note">
+            {result.semanticAnalysisSkippedReason ?? 'Semantic project loading was skipped. DotDet used safe syntax-based analysis.'}
+          </p>
+        ) : null}
+        <div className="det-readiness-concerns">
+          <span>Primary concerns</span>
+          <ul>
+            {(concerns.length > 0 ? concerns : ['No major concerns detected']).slice(0, 3).map((concern) => (
+              <li key={concern}>{concern}</li>
+            ))}
+          </ul>
+        </div>
+      </div>
+
+      <dl className="det-readiness-metrics">
+        <div>
+          <dt>Critical / error</dt>
+          <dd className={blockerCount > 0 ? 'text-red-700' : 'text-teal-700'}>{blockerCount}</dd>
+          <span>release-impact findings</span>
+        </div>
+        <div>
+          <dt>Warnings</dt>
+          <dd className={severityCounts.Warning > 0 ? 'text-amber-700' : 'text-teal-700'}>{severityCounts.Warning}</dd>
+          <span>review recommended</span>
+        </div>
+        <div>
+          <dt>Projects</dt>
+          <dd>{projectCount}</dd>
+          <span>analyzed in solution</span>
+        </div>
+      </dl>
     </section>
   )
 }
 
-function AssessmentSummarySection({
-  result,
-  severityCounts,
-}: {
-  result: AnalysisResult
-  severityCounts: Record<Severity, number>
-}) {
-  const concerns = getPrimaryConcerns(result)
-
+function CategoryScoresSection({ result }: { result: AnalysisResult }) {
   return (
-    <section className="det-overview-section">
-      <div className="det-report-section-heading">
-        <h2 className="text-lg font-semibold text-slate-950">Assessment Summary</h2>
-        <p className="mt-2 text-sm leading-6 text-slate-700">{getOverviewLead(severityCounts)}</p>
-      </div>
-
-      <div className="det-summary-layout mt-5">
+    <section className="det-overview-panel det-category-health-panel">
+      <div className="det-overview-panel-heading">
         <div>
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Primary Concerns</h3>
-          <ul className="mt-3 grid gap-2 text-sm text-slate-700 md:grid-cols-3">
-            {concerns.map((concern) => (
-              <li key={concern} className="flex gap-2">
-                <span className="mt-2 h-1 w-1 shrink-0 bg-slate-500" aria-hidden="true" />
-                <span>{concern}</span>
-              </li>
-            ))}
-          </ul>
+          <span>Category health</span>
+          <h2>Readiness by engineering domain</h2>
         </div>
-        <div className="det-summary-callout">
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Recommendation</h3>
-          <p className="mt-3 text-sm leading-6 text-slate-700">
-            Address the findings list in priority order before release. Use the Engineering Guide for remediation details.
-          </p>
-        </div>
+      </div>
+      <div className="det-category-health-list">
+        {categoryDefinitions.map((category) => {
+          const score = result.categoryScores[category.scoreKey]
+
+          return (
+            <div key={category.key} className="det-category-health-row">
+              <div className="det-category-health-name">
+                <category.icon aria-hidden="true" />
+                <span>{category.reportLabel}</span>
+              </div>
+              <div className="det-category-health-track"><span style={{ width: `${score}%` }} /></div>
+              <strong>{score}</strong>
+            </div>
+          )
+        })}
       </div>
     </section>
   )
@@ -3072,30 +3325,42 @@ function BiggestRisksSection({
   const riskAreas = getRiskAreas(result).slice(0, 3)
 
   return (
-    <section className="det-overview-section">
-      <div className="det-card-heading-row">
+    <section className="det-overview-panel det-overview-risk-panel">
+      <div className="det-overview-panel-heading">
         <div>
-          <h2 className="text-lg font-semibold text-slate-950">Biggest Risks</h2>
-          <p className="mt-2 text-sm text-slate-500">Ranked by category score and critical/error concentration.</p>
+          <span>Priority review</span>
+          <h2>Biggest risks</h2>
+          <p>Ranked by release impact, confidence, and category health.</p>
         </div>
         <button type="button" onClick={onOpenFindings} className="det-card-link-button">
-          Open Findings
+          All findings <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
         </button>
       </div>
-      <div className="det-risk-grid mt-5">
-        {riskAreas.map((area, index) => (
-          <div key={area.category.key} className="det-risk-summary">
-            <div className="flex items-start justify-between gap-3">
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-semibold text-slate-500">{index + 1}</span>
-                <area.category.icon className={`h-4 w-4 ${categoryTextClass(area.category.key)}`} aria-hidden="true" />
-                <span className="font-semibold text-slate-950">{area.category.reportLabel}</span>
+      <div className="det-overview-risk-list">
+        {riskAreas.length > 0 ? (
+          riskAreas.map((area, index) => (
+            <div key={area.category.key} className="det-overview-risk-row">
+              <span className="det-overview-risk-rank">0{index + 1}</span>
+              <area.category.icon className={categoryTextClass(area.category.key)} aria-hidden="true" />
+              <div className="det-overview-risk-copy">
+                <strong>{area.category.reportLabel}</strong>
+                <span>{area.criticalCount} critical/error - {area.issueCount} findings</span>
               </div>
-              <span className="text-sm font-semibold text-slate-950">{area.score}/100</span>
+              <div className="det-overview-risk-score">
+                <strong>{area.score}</strong>
+                <div><span style={{ width: `${area.score}%` }} /></div>
+              </div>
             </div>
-            <p className="mt-2 text-xs leading-5 text-slate-500">{area.criticalCount} critical/error - {area.issueCount} total findings</p>
+          ))
+        ) : (
+          <div className="det-overview-clean-state">
+            <CheckCircle2 aria-hidden="true" />
+            <div>
+              <strong>No significant production risks detected.</strong>
+              <p>No active production findings are currently affecting category risk.</p>
+            </div>
           </div>
-        ))}
+        )}
       </div>
     </section>
   )
@@ -3104,7 +3369,7 @@ function BiggestRisksSection({
 function EngineeringAssessmentPanel({ assessment }: { assessment?: EngineeringAssessmentSummary }) {
   if (!assessment) {
     return (
-      <section className="det-overview-section">
+      <section className="det-overview-panel det-engineering-assessment-panel">
         <h2 className="text-lg font-semibold text-slate-950">Engineering Assessment</h2>
         <p className="mt-1 text-xs text-slate-500">Run analysis again to generate the deterministic architecture assessment.</p>
       </section>
@@ -3113,35 +3378,36 @@ function EngineeringAssessmentPanel({ assessment }: { assessment?: EngineeringAs
 
   const sections = [
     { title: 'Strong Areas', items: assessment.strongAreas },
-    { title: 'Highest Risks', items: assessment.highestRisks },
     { title: 'Architectural Observations', items: assessment.architecturalObservations },
     { title: 'Security Observations', items: assessment.securityObservations },
     { title: 'API Readiness Observations', items: assessment.apiReadinessObservations },
     { title: 'Maintainability Observations', items: assessment.maintainabilityObservations },
-    { title: 'Recommended Priorities', items: assessment.recommendedPriorities },
   ]
 
   return (
-    <section className="det-overview-section">
-      <div className="det-report-section-heading">
-          <h2 className="text-lg font-semibold text-slate-950">Engineering Assessment</h2>
-        <p className="mt-2 text-sm text-slate-500">Readiness observations from the analysis.</p>
+    <section className="det-overview-panel det-engineering-assessment-panel">
+      <div className="det-overview-panel-heading">
+        <div>
+          <span>Supporting analysis</span>
+          <h2>Engineering assessment</h2>
+          <p>Deterministic observations derived from findings, scores, and dependency structure.</p>
+        </div>
       </div>
-      <div className="det-assessment-block mt-4">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Score Explanation</h3>
-        <p className="mt-2 text-sm leading-5 text-slate-700">{assessment.scoreExplanation}</p>
+      <div className="det-assessment-score-explanation">
+        <span>Score explanation</span>
+        <p>{assessment.scoreExplanation}</p>
       </div>
-      <div className="det-assessment-grid mt-6 grid gap-x-10 gap-y-7 lg:grid-cols-2 2xl:grid-cols-3">
+      <div className="det-assessment-grid">
         {sections.map((section) => (
           <div key={section.title} className="det-assessment-block">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">{section.title}</h3>
-            <ul className="mt-2 space-y-1.5 text-sm leading-5 text-slate-700">
+            <h3>{section.title}</h3>
+            <ul>
               {section.items.length > 0 ? (
                 section.items.map((item, index) => (
                   <li key={`${section.title}-${index}`}>{item}</li>
                 ))
               ) : (
-                <li className="text-slate-500">No observations for this section.</li>
+                <li className="text-slate-500">{getEngineeringAssessmentEmptyText(section.title)}</li>
               )}
             </ul>
           </div>
@@ -3158,41 +3424,59 @@ function RecommendedActionsSection({
   issues: RecommendedAction[]
   onOpenIssue: (issueId: string) => void
 }) {
+  const subtitle = issues.length > 0
+    ? 'Start with the highest-confidence, highest-impact work.'
+    : 'No immediate remediation actions were identified.'
+
   return (
-    <section className="det-overview-section">
-      <div className="det-report-section-heading">
-        <h2 className="text-lg font-semibold text-slate-950">Recommended Next Actions</h2>
-        <p className="mt-2 text-sm text-slate-500">Fix these first to reduce the highest production risk fastest.</p>
+    <section className="det-overview-panel det-overview-actions-panel">
+      <div className="det-overview-panel-heading">
+        <div>
+          <span>Remediation roadmap</span>
+          <h2>Recommended next actions</h2>
+          <p>{subtitle}</p>
+        </div>
       </div>
       {issues.length > 0 ? (
-        <div className="det-recommendation-grid mt-5">
+        <div className="det-recommendation-list">
           {issues.map((issue, index) => (
             <button
               key={issue.id}
               type="button"
               onClick={() => onOpenIssue(issue.id)}
-              className="det-recommendation-item text-left transition hover:opacity-85"
+              className="det-recommendation-item text-left"
             >
-              <span className="text-sm font-semibold tabular-nums text-slate-500">{index + 1}</span>
+              <span className="det-recommendation-rank">0{index + 1}</span>
               <div className="min-w-0">
-                <h3 className="text-sm font-semibold leading-5 text-slate-950">{getRecommendedActionTitle(issue)}</h3>
-                <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs">
+                <h3>{getRecommendedActionTitle(issue)}</h3>
+                <div className="det-recommendation-meta">
                   <SeverityLabel severity={issue.severity} />
-                  <span className="text-slate-500">-</span>
                   <CategoryText category={issue.category} />
-                  <span className="text-slate-500">-</span>
                   <span className="truncate text-slate-500">{issue.filePath ? formatPath(issue.filePath) : issue.projectName ?? 'Solution'}</span>
                 </div>
-                <p className="mt-2 text-xs leading-5 text-slate-500">{getConciseRecommendation(issue.recommendation)}</p>
+                <p>{getConciseRecommendation(issue.recommendation)}</p>
               </div>
+              <ChevronRight className="det-recommendation-arrow" aria-hidden="true" />
             </button>
           ))}
         </div>
       ) : (
-        <p className="mt-5 text-sm text-slate-500">No critical recommendations detected.</p>
+        <div className="det-overview-clean-state"><CheckCircle2 aria-hidden="true" /><p>No action list is shown because there are no active production findings.</p></div>
       )}
     </section>
   )
+}
+
+function getEngineeringAssessmentEmptyText(sectionTitle: string) {
+  if (sectionTitle === 'Highest Risks') {
+    return 'No significant production risks detected.'
+  }
+
+  if (sectionTitle === 'Recommended Priorities') {
+    return 'No immediate remediation actions were identified.'
+  }
+
+  return 'No additional observations detected.'
 }
 
 function ArchitectureOverviewSection({
@@ -3206,21 +3490,30 @@ function ArchitectureOverviewSection({
   const boundaryRisks = map.dependencies.filter((dependency) => dependency.isViolation).length
 
   return (
-    <section className="det-overview-section">
-      <div className="det-card-heading-row">
+    <section className="det-overview-panel det-architecture-summary-panel">
+      <div className="det-overview-panel-heading">
         <div>
-          <h2 className="text-lg font-semibold text-slate-950">Architecture</h2>
-          <p className="mt-2 text-sm text-slate-500">Project graph summary and boundary risk count.</p>
+          <span>Solution structure</span>
+          <h2>Architecture map</h2>
+          <p>Project references, dependency direction, and boundary health.</p>
         </div>
         <button type="button" onClick={onOpenArchitecture} className="det-card-link-button">
-          Open Architecture
+          Explore map <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
         </button>
       </div>
-      <dl className="mt-5 grid gap-5 sm:grid-cols-3">
+      <dl className="det-architecture-summary-metrics">
         <CompactMetric label="Projects" value={map.projects.length} tone="neutral" />
         <CompactMetric label="Dependencies" value={map.dependencies.length} tone="neutral" />
         <CompactMetric label="Boundary Risks" value={boundaryRisks} tone={boundaryRisks > 0 ? 'danger' : 'ok'} />
       </dl>
+      <div className="det-architecture-summary-flow" aria-hidden="true">
+        {map.layers.slice(0, 4).map((layer, index) => (
+          <div key={layer.name}>
+            <span>{layer.name}</span>
+            {index < Math.min(map.layers.length, 4) - 1 ? <ChevronRight /> : null}
+          </div>
+        ))}
+      </div>
     </section>
   )
 }
@@ -3539,7 +3832,6 @@ function RuleExplorerPage({
 }) {
   const [query, setQuery] = useState('')
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>('All')
-  const [showAllRules, setShowAllRules] = useState(false)
   const normalizedQuery = query.trim().toLowerCase()
   const activeRuleSummaries = currentIssues.reduce((summaries, issue) => {
     const ruleId = getRuleId(issue)
@@ -3557,7 +3849,7 @@ function RuleExplorerPage({
       activeSeverityRank: activeRuleSummaries.get(rule.ruleId)?.maxSeverity ?? severityRank[rule.severity],
     }))
     .filter((rule) => {
-    const activeMatches = showAllRules || currentIssues.length === 0 || rule.activeCount > 0
+    const activeMatches = rule.activeCount > 0
     const categoryMatches = categoryFilter === 'All' || rule.category === categoryFilter
     const queryMatches =
       !normalizedQuery ||
@@ -3601,15 +3893,15 @@ function RuleExplorerPage({
   const relatedRules = selectedRule
     ? selectedRule.relatedRules
         .map((ruleId) => rules.find((rule) => rule.ruleId === ruleId))
-        .filter((rule): rule is RuleDocumentation => Boolean(rule))
+        .filter((rule): rule is RuleDocumentation => Boolean(rule && activeRuleSummaries.has(rule.ruleId)))
     : []
 
   return (
-    <div className="grid min-h-0 flex-1 grid-cols-[280px_minmax(0,1fr)_320px] overflow-hidden">
-      <aside className="min-h-0 border-r border-slate-300 bg-white">
+    <div className="det-rule-explorer-page grid min-h-0 flex-1 grid-cols-[280px_minmax(0,1fr)_320px] overflow-hidden">
+      <aside className="det-rule-nav min-h-0 border-r border-slate-300 bg-white">
         <div className="border-b border-slate-200 bg-slate-50 px-3 py-2">
           <h2 className="text-sm font-semibold text-slate-950">Rule Explorer</h2>
-          <p className="mt-1 text-xs text-slate-500">{filteredRules.length || 'No'} rules shown.</p>
+          <p className="mt-1 text-xs text-slate-500">{filteredRules.length || 'No'} rules detected in this analysis.</p>
         </div>
         <div className="border-b border-slate-200 p-2">
           <label className="sr-only" htmlFor="rule-search">
@@ -3637,17 +3929,9 @@ function RuleExplorerPage({
               </option>
             ))}
           </select>
-          <label className="mt-2 flex h-7 items-center gap-2 text-xs text-slate-600">
-            <input
-              type="checkbox"
-              checked={showAllRules}
-              onChange={(event) => setShowAllRules(event.target.checked)}
-            />
-            Show all rules
-          </label>
         </div>
         {error ? <div className="m-2 p-2 text-xs text-red-700">{error}</div> : null}
-        <div className="h-[calc(100%-118px)] overflow-auto">
+        <div className="h-[calc(100%-90px)] overflow-auto">
           {filteredRules.map((rule) => {
             const findingCount = rule.activeCount
             const selected = selectedRule?.ruleId === rule.ruleId
@@ -3673,13 +3957,13 @@ function RuleExplorerPage({
               </button>
             )
           })}
-          {filteredRules.length === 0 ? <p className="p-3 text-xs text-slate-500">No active rules match the current filters. Turn on Show all rules to browse the catalog.</p> : null}
+          {filteredRules.length === 0 ? <p className="p-3 text-xs text-slate-500">No detected rules match the current filters.</p> : null}
         </div>
       </aside>
 
-      <main className="min-h-0 overflow-auto bg-slate-50 p-4">
+      <main className="det-rule-document min-h-0 overflow-auto bg-slate-50 p-4">
         {selectedRule ? (
-          <article className="mx-auto max-w-5xl border border-slate-300 bg-white">
+          <article className="det-rule-article mx-auto max-w-5xl border border-slate-300 bg-white">
             <header className="border-b border-slate-200 bg-[#f3f2f1] px-4 py-3">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-mono text-xs font-semibold text-slate-600">{selectedRule.ruleId}</span>
@@ -3747,7 +4031,7 @@ function RuleExplorerPage({
         )}
       </main>
 
-      <aside className="min-h-0 overflow-auto border-l border-slate-300 bg-white">
+      <aside className="det-rule-context min-h-0 overflow-auto border-l border-slate-300 bg-white">
         <div className="border-b border-slate-200 bg-slate-50 px-3 py-2">
           <h3 className="text-sm font-semibold text-slate-950">Rule Context</h3>
           <p className="mt-1 text-xs text-slate-500">Current findings and related rules.</p>
@@ -4592,7 +4876,7 @@ function EngineeringGuidePanel({
   }
 
   return (
-    <aside className="min-h-0 overflow-hidden bg-white">
+    <aside className="det-engineering-guide min-h-0 overflow-hidden bg-white">
       <div className="det-panel-title px-2.5 py-2">
         <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-600">Engineering Guide</h2>
       </div>
@@ -4975,7 +5259,7 @@ function ArchitectureLayerColumn({
           return (
             <div
               key={project.name}
-              className={`w-full px-2 py-2 text-left transition ${
+              className={`det-architecture-project w-full px-2 py-2 text-left transition ${
                 selected
                   ? `${selectedRowClass} font-semibold`
                   : connected
@@ -5340,7 +5624,7 @@ function getStoredPanelWidth(key: string, fallback: number) {
 function loadStoredWorkbenchState(): StoredWorkbenchState {
   return {
     activeCategory: getStoredString(activeCategoryStorageKey, 'All', ['All', ...categoryDefinitions.map((category) => category.key)] as const),
-    activePage: getStoredString(activePageStorageKey, 'Code Explorer', ['Overview', 'Findings', 'Code Explorer', 'Architecture', 'Rule Explorer', 'Settings'] as const),
+    activePage: getStoredString(activePageStorageKey, 'Code Explorer', ['Overview', 'Findings', 'Code Explorer', 'Architecture', 'Rule Explorer', 'Settings', 'Docs', 'Contact'] as const),
     activeProject: localStorage.getItem(activeProjectStorageKey) || 'All',
     activeSeverity: getStoredString(activeSeverityStorageKey, 'All', ['All', 'Info', 'Warning', 'Error', 'Critical'] as const),
     analysisSolutionPath: localStorage.getItem(lastAnalysisSolutionPathStorageKey),
@@ -5363,7 +5647,7 @@ function getStartPageFromPath(hasStoredResult: boolean): StartPage {
   if (path.startsWith('/dashboard')) return 'Dashboard'
   if (path.startsWith('/analyze')) return 'Analyze'
   if (path.startsWith('/reports')) return 'Reports'
-  if (path.startsWith('/rules')) return 'Rules'
+  if (path.startsWith('/rules')) return 'Dashboard'
   if (path.startsWith('/settings')) return 'Settings'
   return 'Home'
 }
@@ -5377,7 +5661,6 @@ function getPathForStartPage(page: StartPage) {
     Docs: '/docs',
     Home: '/',
     Reports: '/reports',
-    Rules: '/rules',
     Settings: '/settings',
   }[page]
 }
@@ -5703,10 +5986,8 @@ function getRiskAreas(result: AnalysisResult) {
       }
     })
 
-  const riskAreas = areas.filter((area) => area.criticalCount > 0 || area.issueCount > 0 || area.score < 100)
-  const actionableRiskAreas = riskAreas.filter((area) => area.criticalCount > 0 || area.issueCount > 0)
-
-  return (actionableRiskAreas.length > 0 ? actionableRiskAreas : riskAreas)
+  return areas
+    .filter((area) => area.criticalCount > 0 || area.issueCount > 0)
     .sort((left, right) => left.score - right.score || right.criticalCount - left.criticalCount)
 }
 
@@ -5725,7 +6006,7 @@ function getPrimaryConcerns(result: AnalysisResult) {
       }
     })
 
-  const activeConcerns = concerns.filter((area) => area.weight > 0 && area.score < 100)
+  const activeConcerns = concerns.filter((area) => area.weight > 0)
 
   return activeConcerns
     .sort((left, right) => right.weight - left.weight || left.score - right.score)
@@ -5735,6 +6016,10 @@ function getPrimaryConcerns(result: AnalysisResult) {
 
 function isRiskSummaryIssue(issue: AnalysisIssue) {
   return issue.severity !== 'Info' && (issue.confidence ?? 'Medium') !== 'Low'
+}
+
+function isActiveProductionFinding(issue: AnalysisIssue) {
+  return isRiskSummaryIssue(issue)
 }
 
 function getConcernLabel(category: Category) {
@@ -5748,8 +6033,8 @@ function getConcernLabel(category: Category) {
 }
 
 function getScoreBarClass(score: number) {
-  if (score >= 85) return 'h-full bg-teal-600'
-  if (score >= 70) return 'h-full bg-emerald-600'
+  if (score >= 85) return 'h-full bg-green-600'
+  if (score >= 70) return 'h-full bg-[#629f43]'
   if (score >= 50) return 'h-full bg-amber-500'
   return 'h-full bg-rose-600'
 }
@@ -5947,7 +6232,7 @@ function getReportFileName(solutionName: string) {
 }
 
 function createMarkdownReport(result: AnalysisResult, dispositions: Record<string, FindingDisposition>) {
-  const openIssues = getOpenFindings(result, dispositions)
+  const openIssues = getOpenFindings(result, dispositions).filter(isActiveProductionFinding)
   const suppressedIssues = getSuppressedFindings(result, dispositions)
   const openCounts = getSeverityCounts(openIssues)
   const activeResult = rebuildAnalysisResultForActiveFindings(result, openIssues)
@@ -6110,7 +6395,7 @@ function createHtmlReport(
   result: AnalysisResult,
   dispositions: Record<string, FindingDisposition>,
 ) {
-  const openIssues = getOpenFindings(result, dispositions)
+  const openIssues = getOpenFindings(result, dispositions).filter(isActiveProductionFinding)
   const suppressedIssues = getSuppressedFindings(result, dispositions)
   const openCounts = getSeverityCounts(openIssues)
   const activeResult = rebuildAnalysisResultForActiveFindings(result, openIssues)
@@ -6357,7 +6642,7 @@ function createHtmlReport(
         <h2>Top Open Risks</h2>
         <p class="section-note">Open findings with the highest release impact. Suppressed, ignored, false-positive, and accepted-risk findings are listed separately.</p>
         <div class="risk-list">
-          ${topRisks.map((issue) => riskItemHtml(issue, dispositions, result.solutionName)).join('') || '<div class="panel-soft">No high-priority risks detected.</div>'}
+          ${topRisks.map((issue) => riskItemHtml(issue, dispositions, result.solutionName)).join('') || '<div class="panel-soft">No significant production risks detected.</div>'}
         </div>
       </section>
 
@@ -6412,6 +6697,7 @@ function rebuildAnalysisResultForActiveFindings(result: AnalysisResult, activeIs
     engineeringAssessment: result.engineeringAssessment
       ? {
           ...result.engineeringAssessment,
+          scoreExplanation: buildScoreExplanation(overallScore, categoryScores, activeIssues),
           highestRisks: getRiskAreas({ ...result, issues: activeIssues, categoryScores, overallScore })
             .slice(0, 3)
             .map((area) =>
@@ -6426,6 +6712,20 @@ function rebuildAnalysisResultForActiveFindings(result: AnalysisResult, activeIs
         }
       : result.engineeringAssessment,
   }
+}
+
+function buildScoreExplanation(score: number, scores: CategoryScores, activeIssues: AnalysisIssue[]) {
+  if (activeIssues.length === 0) {
+    return `DotDet calculated the ${score}/100 readiness score from weighted category scores (Security ${scores.security}, API ${scores.apiReadiness}, EF Core ${scores.efCore}, Dependency Injection ${scores.dependencyInjection}, Architecture ${scores.architecture}), finding severity, confidence, suppression state, and release-impact caps. No active production root-cause findings were detected.`
+  }
+
+  const rootCauseCount = new Set(activeIssues.map(getRootCauseKey)).size
+  const topRisks = getTopRiskIssues(activeIssues)
+    .slice(0, 3)
+    .map((issue) => `${getRuleId(issue)} ${issue.title}`)
+  const rootCauseText = topRisks.length > 0 ? ` Major root causes include ${topRisks.join('; ')}.` : ''
+
+  return `DotDet calculated the ${score}/100 readiness score from weighted category scores (Security ${scores.security}, API ${scores.apiReadiness}, EF Core ${scores.efCore}, Dependency Injection ${scores.dependencyInjection}, Architecture ${scores.architecture}), finding severity, confidence, suppression state, and release-impact caps across ${rootCauseCount} active production root-cause finding(s).${rootCauseText}`
 }
 
 function calculateCategoryScores(issues: AnalysisIssue[]): CategoryScores {
@@ -6453,7 +6753,7 @@ function calculateOverallScore(scores: CategoryScores, issues: AnalysisIssue[]) 
 function calculateScoreForIssues(issues: AnalysisIssue[]) {
   const groups = new Map<string, number[]>()
 
-  for (const issue of issues) {
+  for (const issue of issues.filter(isActiveProductionFinding)) {
     const key = getRootCauseKey(issue)
     groups.set(key, [...(groups.get(key) ?? []), getFindingPenalty(issue)])
   }
@@ -6475,6 +6775,7 @@ function getCriticalScoreCap(issues: AnalysisIssue[]) {
   const activeCriticalRoots = new Set(
     issues
       .filter((issue) => issue.severity === 'Critical')
+      .filter(isActiveProductionFinding)
       .map(getRootCauseKey),
   )
 
@@ -6702,18 +7003,21 @@ function getRiskPriorityRank(issue: AnalysisIssue) {
 }
 
 function buildRecommendedRoadmap(result: AnalysisResult, counts: Record<Severity, number>) {
-  const assessmentPriorities = result.engineeringAssessment?.recommendedPriorities ?? []
+  const hasProductionFindings = counts.Critical + counts.Error + counts.Warning > 0
+  const assessmentPriorities = hasProductionFindings ? result.engineeringAssessment?.recommendedPriorities ?? [] : []
   const riskRecommendations = getTopRiskIssues(result.issues)
     .slice(0, 6)
     .map((issue) => `${getRuleId(issue)}: ${issue.recommendation}`)
-  const baseline = [
-    counts.Critical > 0
-      ? 'Resolve confirmed critical blockers before production release approval.'
-      : counts.Error > 0
-        ? 'Review high-severity findings with the release owner and document accepted residual risk.'
-      : 'Review remaining warnings and confirm release owners accept the residual risk.',
-    'Re-run DotDet after remediation and attach the updated report to the pull request or release ticket.',
-  ]
+  const baseline = hasProductionFindings
+    ? [
+        counts.Critical > 0
+          ? 'Resolve confirmed critical blockers before production release approval.'
+          : counts.Error > 0
+            ? 'Review high-severity findings with the release owner and document accepted residual risk.'
+            : 'Review remaining warnings and confirm release owners accept the residual risk.',
+        'Re-run DotDet after remediation and attach the updated report to the pull request or release ticket.',
+      ]
+    : ['No immediate remediation priorities were identified.']
 
   return [...assessmentPriorities, ...riskRecommendations, ...baseline]
     .filter(Boolean)

@@ -10,6 +10,8 @@ pnpm-debug.log*
 lerna-debug.log*
 playwright-report/
 test-results/
+frontend/.tmp-appdata/
+frontend/.tmp-playwright/
 
 # OS generated files
 .DS_Store
@@ -87,3 +89,4 @@ work/**/obj/
 # Ignore backend and frontend runtime artifacts
 backend/*.pid
 frontend/*.pid
+backend/Forge.Api/Data/*.json

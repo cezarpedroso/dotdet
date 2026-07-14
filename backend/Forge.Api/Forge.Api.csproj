@@ -5,6 +5,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <DisableMSBuildAssemblyCopyCheck>true</DisableMSBuildAssemblyCopyCheck>
+    <StaticWebAssetsEnabled>false</StaticWebAssetsEnabled>
+    <UserSecretsId>9639d4a3-6a47-4033-8d28-d672d7d57d6d</UserSecretsId>
   </PropertyGroup>
 
   <ItemGroup>

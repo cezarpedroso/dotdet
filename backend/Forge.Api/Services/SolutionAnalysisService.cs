@@ -19,6 +19,7 @@ public sealed partial class SolutionAnalysisService
     private readonly EfCoreAnalyzer _efCoreAnalyzer;
     private readonly SecurityConfigurationAnalyzer _securityConfigurationAnalyzer;
     private readonly ApiReadinessAnalyzer _apiReadinessAnalyzer;
+    private readonly FindingGroupingService _findingGroupingService;
     private readonly IssueEnrichmentService _issueEnrichmentService;
     private readonly ScoringService _scoringService;
     private readonly ArchitectureMapService _architectureMapService;
@@ -32,6 +33,7 @@ public sealed partial class SolutionAnalysisService
         EfCoreAnalyzer efCoreAnalyzer,
         SecurityConfigurationAnalyzer securityConfigurationAnalyzer,
         ApiReadinessAnalyzer apiReadinessAnalyzer,
+        FindingGroupingService findingGroupingService,
         IssueEnrichmentService issueEnrichmentService,
         ScoringService scoringService,
         ArchitectureMapService architectureMapService,
@@ -44,6 +46,7 @@ public sealed partial class SolutionAnalysisService
         _efCoreAnalyzer = efCoreAnalyzer;
         _securityConfigurationAnalyzer = securityConfigurationAnalyzer;
         _apiReadinessAnalyzer = apiReadinessAnalyzer;
+        _findingGroupingService = findingGroupingService;
         _issueEnrichmentService = issueEnrichmentService;
         _scoringService = scoringService;
         _architectureMapService = architectureMapService;
@@ -52,10 +55,19 @@ public sealed partial class SolutionAnalysisService
         _logger = logger;
     }
 
-    public async Task<AnalysisResult> AnalyzeAsync(string inputPath, CancellationToken cancellationToken)
+    public Task<AnalysisResult> AnalyzeAsync(string inputPath, CancellationToken cancellationToken)
+    {
+        return AnalyzeAsync(inputPath, AnalysisInputTrust.TrustedLocalDevelopment, cancellationToken);
+    }
+
+    public async Task<AnalysisResult> AnalyzeAsync(
+        string inputPath,
+        AnalysisInputTrust inputTrust,
+        CancellationToken cancellationToken)
     {
         var solutionPath = ResolveSolutionPath(inputPath);
-        var context = await BuildContextAsync(solutionPath, cancellationToken);
+        var options = AnalysisLoadOptions.For(inputTrust);
+        var context = await BuildContextAsync(solutionPath, options, cancellationToken);
 
         var issues = new List<AnalysisIssue>();
         issues.AddRange(_architectureAnalyzer.Analyze(context));
@@ -63,7 +75,9 @@ public sealed partial class SolutionAnalysisService
         issues.AddRange(_efCoreAnalyzer.Analyze(context));
         issues.AddRange(_securityConfigurationAnalyzer.Analyze(context));
         issues.AddRange(_apiReadinessAnalyzer.Analyze(context));
+        issues = _findingGroupingService.Group(issues).ToList();
         issues = _issueEnrichmentService.Enrich(issues).ToList();
+        issues = NormalizeDetectionMethodsForFidelity(issues, options).ToList();
         var suppressionFile = _suppressionService.Load(solutionPath);
         issues = _suppressionService.Apply(issues, solutionPath, suppressionFile).ToList();
 
@@ -88,6 +102,17 @@ public sealed partial class SolutionAnalysisService
             Issues = orderedIssues,
             ProjectGraph = projectGraph,
             SourceFiles = sourceFiles,
+            SourcePreviewAvailable = sourceFiles.Count > 0,
+            SourcePreviewUnavailableReason = sourceFiles.Count > 0
+                ? null
+                : "Source preview is unavailable for this analysis result.",
+            AnalysisFidelity = options.AllowMSBuildWorkspace
+                ? "Roslyn Semantic Analysis"
+                : "Safe Syntax Analysis",
+            SemanticAnalysisSkipped = !options.AllowMSBuildWorkspace,
+            SemanticAnalysisSkippedReason = options.AllowMSBuildWorkspace
+                ? null
+                : "Semantic project loading was skipped for untrusted input because isolated analysis is not configured. DotDet used safe syntax-based analysis.",
             ArchitectureMap = architectureMap,
             EngineeringAssessment = _engineeringAssessmentService.Build(overallScore, categoryScores, orderedIssues, architectureMap),
             SolutionPath = solutionPath,
@@ -165,14 +190,19 @@ public sealed partial class SolutionAnalysisService
 
     private async Task<SolutionAnalysisContext> BuildContextAsync(
         string solutionPath,
+        AnalysisLoadOptions options,
         CancellationToken cancellationToken)
     {
         var rootDirectory = Path.GetDirectoryName(solutionPath) ?? Directory.GetCurrentDirectory();
-        var projectDefinitions = await TryLoadProjectsWithMsBuildAsync(solutionPath, cancellationToken);
+        var projectDefinitions = options.AllowMSBuildWorkspace
+            ? await TryLoadProjectsWithMsBuildAsync(solutionPath, cancellationToken)
+            : new List<ProjectDefinition>();
 
         if (projectDefinitions.Count == 0)
         {
-            projectDefinitions = LoadProjectDefinitionsFromSeeds(DiscoverProjectFilesFromSolution(solutionPath));
+            projectDefinitions = LoadProjectDefinitionsFromSeeds(
+                DiscoverProjectFilesFromSolution(solutionPath),
+                options.AllowMSBuildEvaluation);
         }
 
         if (projectDefinitions.Count == 0)
@@ -182,9 +212,11 @@ public sealed partial class SolutionAnalysisService
                 .Where(path => !AnalyzerUtilities.IsUnderBuildOutput(path))
                 .ToList();
 
-            projectDefinitions = LoadProjectDefinitionsFromSeeds(discoveredProjects
-                .Select(path => new ProjectDefinitionSeed(Path.GetFileNameWithoutExtension(path), AnalyzerUtilities.NormalizePath(path)))
-                .ToList());
+            projectDefinitions = LoadProjectDefinitionsFromSeeds(
+                discoveredProjects
+                    .Select(path => new ProjectDefinitionSeed(Path.GetFileNameWithoutExtension(path), AnalyzerUtilities.NormalizePath(path)))
+                    .ToList(),
+                options.AllowMSBuildEvaluation);
         }
 
         var projects = BuildAnalyzedProjects(projectDefinitions)
@@ -194,7 +226,7 @@ public sealed partial class SolutionAnalysisService
             .ToArray();
 
         var sourceFiles = await LoadSourceFilesAsync(projects, cancellationToken);
-        var semanticContext = await LoadSemanticContextAsync(solutionPath, projects, cancellationToken);
+        var semanticContext = await LoadSemanticContextAsync(solutionPath, projects, options, cancellationToken);
         var appSettingsFiles = Directory
             .EnumerateFiles(rootDirectory, "appsettings*.json", SearchOption.AllDirectories)
             .Where(path => !AnalyzerUtilities.IsUnderBuildOutput(path))
@@ -297,11 +329,20 @@ public sealed partial class SolutionAnalysisService
             .ToList();
     }
 
-    private List<ProjectDefinition> LoadProjectDefinitionsFromSeeds(IReadOnlyList<ProjectDefinitionSeed> seeds)
+    private List<ProjectDefinition> LoadProjectDefinitionsFromSeeds(
+        IReadOnlyList<ProjectDefinitionSeed> seeds,
+        bool allowMSBuildEvaluation)
     {
         if (seeds.Count == 0)
         {
             return new List<ProjectDefinition>();
+        }
+
+        if (!allowMSBuildEvaluation)
+        {
+            return seeds
+                .Select(seed => BuildProjectDefinitionFromXml(seed, assemblyNameHint: null))
+                .ToList();
         }
 
         MsBuildRegistration.EnsureRegistered();
@@ -355,23 +396,29 @@ public sealed partial class SolutionAnalysisService
         catch (Exception exception)
         {
             _logger.LogInformation(exception, "MSBuild evaluation could not fully resolve {ProjectPath}; falling back to XML parsing.", seed.FilePath);
-
-            var packageReferences = AnalyzerUtilities.ReadPackageReferences(seed.FilePath);
-            var projectReferences = AnalyzerUtilities.ReadProjectReferences(seed.FilePath);
-            var projectDocument = XDocument.Load(seed.FilePath);
-            var sdk = projectDocument.Root?.Attribute("Sdk")?.Value;
-
-            return new ProjectDefinition(
-                seed.Name,
-                seed.FilePath,
-                assemblyNameHint ?? Path.GetFileNameWithoutExtension(seed.FilePath),
-                sdk,
-                projectDocument.Descendants().FirstOrDefault(element => element.Name.LocalName == "TargetFramework")?.Value
-                    ?? projectDocument.Descendants().FirstOrDefault(element => element.Name.LocalName == "TargetFrameworks")?.Value,
-                packageReferences,
-                projectReferences,
-                false);
+            return BuildProjectDefinitionFromXml(seed, assemblyNameHint);
         }
+    }
+
+    private static ProjectDefinition BuildProjectDefinitionFromXml(
+        ProjectDefinitionSeed seed,
+        string? assemblyNameHint)
+    {
+        var packageReferences = AnalyzerUtilities.ReadPackageReferences(seed.FilePath);
+        var projectReferences = AnalyzerUtilities.ReadProjectReferences(seed.FilePath);
+        var projectDocument = XDocument.Load(seed.FilePath);
+        var sdk = projectDocument.Root?.Attribute("Sdk")?.Value;
+
+        return new ProjectDefinition(
+            seed.Name,
+            seed.FilePath,
+            assemblyNameHint ?? Path.GetFileNameWithoutExtension(seed.FilePath),
+            sdk,
+            projectDocument.Descendants().FirstOrDefault(element => element.Name.LocalName == "TargetFramework")?.Value
+                ?? projectDocument.Descendants().FirstOrDefault(element => element.Name.LocalName == "TargetFrameworks")?.Value,
+            packageReferences,
+            projectReferences,
+            false);
     }
 
     private static IReadOnlyList<AnalyzedProject> BuildAnalyzedProjects(IReadOnlyList<ProjectDefinition> definitions)
@@ -586,6 +633,7 @@ public sealed partial class SolutionAnalysisService
             .Select(file => file.FilePath)
             .Concat(context.AppSettingsFiles)
             .Concat(context.Projects.Select(project => project.FilePath))
+            .Concat(DiscoverSourcePreviewFiles(rootDirectory))
             .Concat(issues.Select(issue => issue.FilePath).OfType<string>().Where(path => !string.IsNullOrWhiteSpace(path)))
             .Select(AnalyzerUtilities.NormalizePath)
             .Where(path => IsSourceProjectionCandidate(path, rootDirectory))
@@ -620,23 +668,94 @@ public sealed partial class SolutionAnalysisService
         return sourceFiles;
     }
 
+    private static IEnumerable<string> DiscoverSourcePreviewFiles(string rootDirectory)
+    {
+        var pendingDirectories = new Stack<string>();
+        pendingDirectories.Push(rootDirectory);
+
+        while (pendingDirectories.Count > 0)
+        {
+            var currentDirectory = pendingDirectories.Pop();
+
+            IEnumerable<string> childDirectories;
+            IEnumerable<string> childFiles;
+            try
+            {
+                childDirectories = Directory.EnumerateDirectories(currentDirectory).ToArray();
+                childFiles = Directory.EnumerateFiles(currentDirectory).ToArray();
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                continue;
+            }
+
+            foreach (var directory in childDirectories)
+            {
+                if (!IsExcludedSourcePreviewDirectory(directory))
+                {
+                    pendingDirectories.Push(directory);
+                }
+            }
+
+            foreach (var file in childFiles)
+            {
+                if (IsSourceProjectionCandidate(file, rootDirectory))
+                {
+                    yield return file;
+                }
+            }
+        }
+    }
+
     private static bool IsSourceProjectionCandidate(string path, string rootDirectory)
     {
         if (!File.Exists(path)
             || AnalyzerUtilities.IsUnderBuildOutput(path)
+            || IsUnderExcludedSourcePreviewDirectory(path)
             || !IsUnderRoot(path, rootDirectory))
         {
             return false;
         }
 
+        var fileName = Path.GetFileName(path);
         var extension = Path.GetExtension(path);
         return extension.Equals(".cs", StringComparison.OrdinalIgnoreCase)
             || extension.Equals(".csproj", StringComparison.OrdinalIgnoreCase)
-            || extension.Equals(".json", StringComparison.OrdinalIgnoreCase)
             || extension.Equals(".props", StringComparison.OrdinalIgnoreCase)
             || extension.Equals(".targets", StringComparison.OrdinalIgnoreCase)
             || extension.Equals(".sln", StringComparison.OrdinalIgnoreCase)
-            || extension.Equals(".slnx", StringComparison.OrdinalIgnoreCase);
+            || extension.Equals(".slnx", StringComparison.OrdinalIgnoreCase)
+            || (extension.Equals(".json", StringComparison.OrdinalIgnoreCase)
+                && IsSupportedSourcePreviewJson(fileName))
+            || (extension.Equals(".md", StringComparison.OrdinalIgnoreCase)
+                && fileName.Equals("README.md", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool IsSupportedSourcePreviewJson(string fileName)
+    {
+        return fileName.StartsWith("appsettings", StringComparison.OrdinalIgnoreCase)
+            || fileName.Equals("global.json", StringComparison.OrdinalIgnoreCase)
+            || fileName.Equals("launchSettings.json", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsUnderExcludedSourcePreviewDirectory(string path)
+    {
+        var parts = path.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return parts.Any(IsExcludedSourcePreviewDirectoryName);
+    }
+
+    private static bool IsExcludedSourcePreviewDirectory(string directory)
+    {
+        return IsExcludedSourcePreviewDirectoryName(Path.GetFileName(directory));
+    }
+
+    private static bool IsExcludedSourcePreviewDirectoryName(string? directoryName)
+    {
+        return directoryName is not null
+            && (directoryName.Equals("bin", StringComparison.OrdinalIgnoreCase)
+                || directoryName.Equals("obj", StringComparison.OrdinalIgnoreCase)
+                || directoryName.Equals(".git", StringComparison.OrdinalIgnoreCase)
+                || directoryName.Equals("node_modules", StringComparison.OrdinalIgnoreCase));
     }
 
     private static string ResolveProjectName(
@@ -662,6 +781,7 @@ public sealed partial class SolutionAnalysisService
             ".cs" => "csharp",
             ".csproj" or ".props" or ".targets" or ".slnx" => "xml",
             ".json" => "json",
+            ".md" => "markdown",
             _ => "plaintext"
         };
     }
@@ -674,11 +794,34 @@ public sealed partial class SolutionAnalysisService
                 && !Path.IsPathRooted(relativePath));
     }
 
+    private static IEnumerable<AnalysisIssue> NormalizeDetectionMethodsForFidelity(
+        IEnumerable<AnalysisIssue> issues,
+        AnalysisLoadOptions options)
+    {
+        if (options.AllowMSBuildWorkspace)
+        {
+            return issues;
+        }
+
+        return issues.Select(issue => issue.DetectionMethod == IssueEnrichmentService.RoslynSemanticAnalysis
+            ? issue with { DetectionMethod = IssueEnrichmentService.RoslynSyntaxAnalysis }
+            : issue);
+    }
+
     private async Task<SemanticContextLoadResult> LoadSemanticContextAsync(
         string solutionPath,
         IReadOnlyList<AnalyzedProject> projects,
+        AnalysisLoadOptions options,
         CancellationToken cancellationToken)
     {
+        if (!options.AllowMSBuildWorkspace)
+        {
+            _logger.LogInformation(
+                "Skipping MSBuildWorkspace semantic load for untrusted input {SolutionPath}; using syntax-based analysis.",
+                solutionPath);
+            return new SemanticContextLoadResult(Array.Empty<SemanticProjectContext>(), Array.Empty<SemanticDocumentContext>());
+        }
+
         try
         {
             MsBuildRegistration.EnsureRegistered();
@@ -921,4 +1064,20 @@ public sealed partial class SolutionAnalysisService
     private sealed record SemanticContextLoadResult(
         IReadOnlyList<SemanticProjectContext> Projects,
         IReadOnlyList<SemanticDocumentContext> Documents);
+}
+
+public enum AnalysisInputTrust
+{
+    TrustedLocalDevelopment,
+    UntrustedArchive
+}
+
+public sealed record AnalysisLoadOptions(bool AllowMSBuildWorkspace, bool AllowMSBuildEvaluation)
+{
+    public static AnalysisLoadOptions For(AnalysisInputTrust inputTrust)
+    {
+        return inputTrust == AnalysisInputTrust.TrustedLocalDevelopment
+            ? new AnalysisLoadOptions(AllowMSBuildWorkspace: true, AllowMSBuildEvaluation: true)
+            : new AnalysisLoadOptions(AllowMSBuildWorkspace: false, AllowMSBuildEvaluation: false);
+    }
 }

@@ -1,4 +1,5 @@
 using System.Xml.Linq;
+using Forge.Api.Models;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
@@ -28,6 +29,8 @@ public static class AnalyzerUtilities
         "IHostEnvironment",
         "IHttpContextAccessor",
         "ILogger",
+        "ILoggerFactory",
+        "ILoggerProvider",
         "IMapper",
         "IOptions",
         "IOptionsMonitor",
@@ -87,6 +90,12 @@ public static class AnalyzerUtilities
     public static bool IsLikelyFrameworkService(string typeName)
     {
         if (PrimitiveOrFrameworkServices.Contains(typeName))
+        {
+            return true;
+        }
+
+        var genericTypeName = typeName.Split('<')[0];
+        if (PrimitiveOrFrameworkServices.Contains(genericTypeName))
         {
             return true;
         }
@@ -216,6 +225,13 @@ public static class AnalyzerUtilities
     public static bool IsProductionEntryPointProject(AnalyzedProject project)
     {
         return !project.IsTestProject && project.IsAspNetCoreEntryPoint;
+    }
+
+    public static bool IsActiveProductionFinding(AnalysisIssue issue)
+    {
+        return issue.Suppression is not { IsExpired: false }
+            && issue.Severity != IssueSeverity.Info
+            && (issue.Confidence ?? IssueConfidence.Medium) != IssueConfidence.Low;
     }
 
     public static string BuildEvidence(params (string Label, string? Value)[] items)

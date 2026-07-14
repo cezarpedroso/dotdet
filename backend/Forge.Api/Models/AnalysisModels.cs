@@ -4,6 +4,8 @@ namespace Forge.Api.Models;
 
 public sealed record AnalysisResult
 {
+    public string? AnalysisRunId { get; init; }
+
     public required string SolutionName { get; init; }
 
     public required DateTimeOffset AnalyzedAt { get; init; }
@@ -17,6 +19,18 @@ public sealed record AnalysisResult
     public required ProjectGraph ProjectGraph { get; init; }
 
     public IReadOnlyList<AnalysisSourceFile> SourceFiles { get; init; } = Array.Empty<AnalysisSourceFile>();
+
+    public bool IsHistoricalSnapshot { get; init; }
+
+    public bool SourcePreviewAvailable { get; init; } = true;
+
+    public string? SourcePreviewUnavailableReason { get; init; }
+
+    public string AnalysisFidelity { get; init; } = "Roslyn Semantic Analysis";
+
+    public bool SemanticAnalysisSkipped { get; init; }
+
+    public string? SemanticAnalysisSkippedReason { get; init; }
 
     public ArchitectureMap? ArchitectureMap { get; init; }
 
@@ -97,6 +111,10 @@ public sealed record AnalysisIssue
 
     public IReadOnlyList<string>? RelatedFindingIds { get; init; }
 
+    public IReadOnlyList<AnalysisEvidence>? Evidence { get; init; }
+
+    public string? RootCauseKey { get; init; }
+
     public string? SuggestedSnippet { get; init; }
 
     public string? GoodExample { get; init; }
@@ -132,6 +150,17 @@ public sealed record AnalysisDocumentationLink
     public required string Label { get; init; }
 
     public required string Href { get; init; }
+}
+
+public sealed record AnalysisEvidence
+{
+    public required string Label { get; init; }
+
+    public required string Detail { get; init; }
+
+    public string? FilePath { get; init; }
+
+    public int? LineNumber { get; init; }
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
@@ -254,6 +283,8 @@ public sealed record ArchitectureMapViolation
 public sealed record EngineeringAssessmentSummary
 {
     public required string OverallProductionReadiness { get; init; }
+
+    public required string ScoreExplanation { get; init; }
 
     public required IReadOnlyList<string> StrongAreas { get; init; }
 

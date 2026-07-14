@@ -12,7 +12,7 @@ public sealed class EngineeringAssessmentService
         ArchitectureMap architectureMap)
     {
         var activeIssues = issues
-            .Where(issue => issue.Suppression is not { IsExpired: false })
+            .Where(AnalyzerUtilities.IsActiveProductionFinding)
             .ToArray();
         var severityCounts = activeIssues
             .GroupBy(issue => issue.Severity)
@@ -40,7 +40,7 @@ public sealed class EngineeringAssessmentService
         IReadOnlyList<AnalysisIssue> issues)
     {
         var activeIssues = issues
-            .Where(issue => issue.Suppression is not { IsExpired: false })
+            .Where(AnalyzerUtilities.IsActiveProductionFinding)
             .ToArray();
         var rootCauseCount = activeIssues
             .Select(issue => issue.RootCauseKey ?? $"{issue.RuleId ?? issue.Id}|{issue.ProjectName}|{issue.FilePath}|{issue.Title}")
@@ -53,11 +53,18 @@ public sealed class EngineeringAssessmentService
             .Select(BuildScoreRootCauseSummary)
             .ToArray();
 
+        var scoreContext = $"DotDet calculated the {overallScore}/100 readiness score from weighted category scores (Security {scores.Security}, API {scores.ApiReadiness}, EF Core {scores.EfCore}, Dependency Injection {scores.DependencyInjection}, Architecture {scores.Architecture}), finding severity, confidence, suppression state, and release-impact caps";
+
+        if (rootCauseCount == 0)
+        {
+            return $"{scoreContext}. No active production root-cause findings were detected.";
+        }
+
         var rootCauseText = topRootCauses.Length > 0
             ? $" Major root causes include {string.Join("; ", topRootCauses)}."
-            : " No active root-cause findings were detected.";
+            : string.Empty;
 
-        return $"DotDet calculated the {overallScore}/100 readiness score from weighted category scores (Security {scores.Security}, API {scores.ApiReadiness}, EF Core {scores.EfCore}, Dependency Injection {scores.DependencyInjection}, Architecture {scores.Architecture}), finding severity, confidence, suppression state, and release-impact caps across {rootCauseCount} active root-cause finding(s).{rootCauseText}";
+        return $"{scoreContext} across {rootCauseCount} active production root-cause finding(s).{rootCauseText}";
     }
 
     private static string GetScoreExplanationBucket(AnalysisIssue issue)
@@ -144,15 +151,8 @@ public sealed class EngineeringAssessmentService
     {
         var profiles = GetCategoryProfiles(scores, issues);
         var riskProfiles = profiles
-            .Where(profile => profile.BlockerCount > 0 || profile.RiskIssueCount > 0 || profile.Score < 100)
+            .Where(profile => profile.BlockerCount > 0 || profile.RiskIssueCount > 0)
             .ToArray();
-
-        if (riskProfiles.Any(profile => profile.BlockerCount > 0 || profile.RiskIssueCount > 0))
-        {
-            riskProfiles = riskProfiles
-                .Where(profile => profile.BlockerCount > 0 || profile.RiskIssueCount > 0)
-                .ToArray();
-        }
 
         var highestRisks = riskProfiles
             .OrderByDescending(profile => profile.BlockerCount)
@@ -172,7 +172,7 @@ public sealed class EngineeringAssessmentService
 
         return highestRisks.Length > 0
             ? highestRisks
-            : ["No high-priority category risks were detected."];
+            : ["No significant production risks detected."];
     }
 
     private static IReadOnlyList<string> BuildArchitectureObservations(

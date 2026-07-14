@@ -2,6 +2,7 @@ using Forge.Api.Contracts;
 using Forge.Api.Models;
 using Forge.Api.Services;
 using Microsoft.AspNetCore.Mvc;
+using System.Security.Claims;
 
 namespace Forge.Api.Controllers;
 
@@ -9,50 +10,85 @@ namespace Forge.Api.Controllers;
 [Route("api/[controller]")]
 public sealed class SuppressionsController : ControllerBase
 {
-    private readonly SuppressionService _suppressionService;
+    private const string SuppressionsUnavailableMessage = "Suppressions are not available for this analysis source yet.";
 
-    public SuppressionsController(SuppressionService suppressionService)
+    private readonly AnalysisHistoryStore _analysisHistoryStore;
+
+    public SuppressionsController(AnalysisHistoryStore analysisHistoryStore)
     {
-        _suppressionService = suppressionService;
+        _analysisHistoryStore = analysisHistoryStore;
     }
 
     [HttpPost]
     [ProducesResponseType<RepositorySuppression>(StatusCodes.Status200OK)]
-    public ActionResult<RepositorySuppression> Create([FromBody] CreateSuppressionRequest request)
+    public async Task<ActionResult<RepositorySuppression>> Create(
+        [FromBody] CreateSuppressionRequest request,
+        CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(request.SolutionPath))
+        var userId = GetCurrentUserId();
+        if (userId is null)
         {
-            return BadRequest("A solution path is required.");
+            return Unauthorized();
         }
 
-        if (string.IsNullOrWhiteSpace(request.RuleId))
+        if (string.IsNullOrWhiteSpace(request.AnalysisRunId))
         {
-            return BadRequest("A rule ID is required.");
+            return BadRequest(SuppressionsUnavailableMessage);
         }
 
-        var suppression = _suppressionService.Create(new CreateSuppressionInput(
-            request.SolutionPath,
-            request.RuleId,
-            request.File,
-            request.Project,
+        if (string.IsNullOrWhiteSpace(request.FindingId))
+        {
+            return BadRequest("A finding ID is required.");
+        }
+
+        var suppression = await _analysisHistoryStore.CreateSuppressionAsync(
+            userId,
+            request.AnalysisRunId,
+            request.FindingId,
             request.Reason,
             request.Status,
-            request.Expiration));
+            request.Expiration,
+            cancellationToken);
+
+        if (suppression is null)
+        {
+            return NotFound();
+        }
 
         return Ok(suppression);
     }
 
     [HttpDelete("{suppressionId}")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
-    public IActionResult Delete(string suppressionId, [FromQuery] string solutionPath)
+    public async Task<IActionResult> Delete(
+        string suppressionId,
+        [FromQuery] string? analysisRunId,
+        CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(solutionPath))
+        var userId = GetCurrentUserId();
+        if (userId is null)
         {
-            return BadRequest("A solution path is required.");
+            return Unauthorized();
         }
 
-        return _suppressionService.Remove(solutionPath, suppressionId)
+        if (string.IsNullOrWhiteSpace(analysisRunId))
+        {
+            return BadRequest(SuppressionsUnavailableMessage);
+        }
+
+        return await _analysisHistoryStore.RemoveSuppressionAsync(
+            userId,
+            analysisRunId,
+            suppressionId,
+            cancellationToken)
             ? NoContent()
             : NotFound();
+    }
+
+    private string? GetCurrentUserId()
+    {
+        return User.Identity?.IsAuthenticated == true
+            ? User.FindFirstValue(ClaimTypes.NameIdentifier)
+            : null;
     }
 }

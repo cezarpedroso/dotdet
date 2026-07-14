@@ -64,59 +64,29 @@ public sealed class SuppressionService
             .ToArray();
     }
 
-    public RepositorySuppression Create(CreateSuppressionInput input)
+    public static RepositorySuppression CreateForIssue(
+        AnalysisIssue issue,
+        string? reason,
+        string? status,
+        DateTimeOffset? expiration)
     {
-        var suppressionFilePath = GetSuppressionFilePath(input.SolutionPath);
-        var suppressionFile = Load(input.SolutionPath);
-        var rootDirectory = Path.GetDirectoryName(SolutionAnalysisService.ResolveSolutionPath(input.SolutionPath))
-            ?? Directory.GetCurrentDirectory();
-        var normalizedFile = NormalizeSuppressionFile(input.File, rootDirectory);
         var now = DateTimeOffset.UtcNow;
-        var suppression = new RepositorySuppression
+        return new RepositorySuppression
         {
             Id = $"sup_{Guid.NewGuid():N}",
-            RuleId = input.RuleId,
-            File = normalizedFile,
-            Project = string.IsNullOrWhiteSpace(input.Project) ? null : input.Project,
-            Reason = string.IsNullOrWhiteSpace(input.Reason) ? "No reason provided." : input.Reason.Trim(),
-            Status = NormalizeStatus(input.Status),
+            RuleId = issue.RuleId ?? issue.Id,
+            File = NormalizeStoredFile(issue.FilePath),
+            Project = string.IsNullOrWhiteSpace(issue.ProjectName) ? null : issue.ProjectName,
+            Reason = string.IsNullOrWhiteSpace(reason) ? "No reason provided." : reason.Trim(),
+            Status = NormalizeStatus(status),
             CreatedDate = now,
-            Expiration = input.Expiration
+            Expiration = expiration
         };
-
-        var suppressions = suppressionFile.Suppressions
-            .Where(existing => !SameScope(existing, suppression))
-            .Append(suppression)
-            .OrderBy(existing => existing.RuleId, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(existing => existing.Project, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(existing => existing.File, StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-
-        Save(suppressionFilePath, suppressionFile with { Suppressions = suppressions });
-        return suppression;
     }
 
-    public bool Remove(string solutionPath, string suppressionId)
+    public static AnalysisIssue ApplyToIssue(AnalysisIssue issue, RepositorySuppression suppression)
     {
-        var suppressionFilePath = GetSuppressionFilePath(solutionPath);
-        var suppressionFile = Load(solutionPath);
-        var suppressions = suppressionFile.Suppressions
-            .Where(suppression => !suppression.Id.Equals(suppressionId, StringComparison.OrdinalIgnoreCase))
-            .ToArray();
-
-        if (suppressions.Length == suppressionFile.Suppressions.Count)
-        {
-            return false;
-        }
-
-        Save(suppressionFilePath, suppressionFile with { Suppressions = suppressions });
-        return true;
-    }
-
-    private static void Save(string suppressionFilePath, DotDetSuppressionFile suppressionFile)
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(suppressionFilePath) ?? Directory.GetCurrentDirectory());
-        File.WriteAllText(suppressionFilePath, JsonSerializer.Serialize(suppressionFile, JsonOptions));
+        return issue with { Suppression = ToFindingSuppression(suppression) };
     }
 
     private static bool Matches(RepositorySuppression suppression, AnalysisIssue issue, string rootDirectory)
@@ -165,9 +135,9 @@ public sealed class SuppressionService
         };
     }
 
-    private static string NormalizeStatus(string status)
+    public static string NormalizeStatus(string? status)
     {
-        return status.Trim() switch
+        return status?.Trim() switch
         {
             "FalsePositive" => "False Positive",
             "False Positive" => "False Positive",
@@ -199,17 +169,24 @@ public sealed class SuppressionService
         return normalizedFile.Replace('\\', '/');
     }
 
+    private static string? NormalizeStoredFile(string? filePath)
+    {
+        if (string.IsNullOrWhiteSpace(filePath))
+        {
+            return null;
+        }
+
+        var normalizedFile = filePath.Trim().Replace('\\', '/');
+        if (Path.IsPathRooted(normalizedFile) || normalizedFile.StartsWith("//", StringComparison.Ordinal))
+        {
+            return Path.GetFileName(normalizedFile);
+        }
+
+        return normalizedFile;
+    }
+
     private static bool IsExpired(RepositorySuppression suppression)
     {
         return suppression.Expiration is not null && suppression.Expiration < DateTimeOffset.UtcNow;
     }
 }
-
-public sealed record CreateSuppressionInput(
-    string SolutionPath,
-    string RuleId,
-    string? File,
-    string? Project,
-    string Reason,
-    string Status,
-    DateTimeOffset? Expiration);
