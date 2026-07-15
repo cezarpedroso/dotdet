@@ -1,55 +1,63 @@
-# Docs for the Azure Web Apps Deploy action: https://github.com/Azure/webapps-deploy
-# More GitHub Actions for Azure: https://github.com/Azure/actions
-
-name: Build and deploy Node.js app to Azure Web App - dotdet-frontend
+name: Build and deploy DotDet frontend to Azure Web App
 
 on:
   push:
     branches:
       - main
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/azure-frontend.yml'
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: windows-latest
     permissions:
-      contents: read #This is required for actions/checkout
+      contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Set up Node.js version
-        uses: actions/setup-node@v3
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
         with:
           node-version: '22.x'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
 
-      - name: npm install, build, and test
-        run: |
-          npm install
-          npm run build --if-present
-          npm run test --if-present
-      
-      - name: Upload artifact for deployment job
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontend
+        env:
+          VITE_DOTDET_API_URL: https://dotdet-ctbsh6dzfnb0athn.eastus-01.azurewebsites.net
+        run: npm run build
+
+      - name: Upload frontend artifact
         uses: actions/upload-artifact@v4
         with:
-          name: node-app
-          path: .
+          name: dotdet-frontend
+          path: frontend/dist
 
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     needs: build
-    
+    permissions:
+      contents: read
+
     steps:
-      - name: Download artifact from build job
+      - name: Download frontend artifact
         uses: actions/download-artifact@v4
         with:
-          name: node-app
-      
-      - name: 'Deploy to Azure Web App'
+          name: dotdet-frontend
+          path: dotdet-frontend
+
+      - name: Deploy frontend to Azure Web App
         uses: azure/webapps-deploy@v3
-        id: deploy-to-webapp
         with:
-          app-name: 'dotdet-frontend'
-          slot-name: 'Production'
-          package: .
+          app-name: dotdet-frontend
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_5CAEB75B288747268BFDF8FE2A46074D }}
+          package: dotdet-frontend
