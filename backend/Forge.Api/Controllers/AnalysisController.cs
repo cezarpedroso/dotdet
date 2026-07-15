@@ -80,11 +80,14 @@ public sealed class AnalysisController : ControllerBase
     [EnableRateLimiting("analysis")]
     [AnalysisExecution]
     [ProducesResponseType<AnalysisResult>(StatusCodes.Status200OK)]
-    public async Task<ActionResult<AnalysisResult>> AnalyzeSample(CancellationToken cancellationToken)
+    public async Task<ActionResult<AnalysisResult>> AnalyzeSample(
+        CancellationToken cancellationToken,
+        [FromQuery] string? sampleId = null)
     {
         try
         {
-            var sampleSolutionPath = SolutionAnalysisService.ResolveSampleSolutionPath();
+            var sample = BundledSampleCatalog.Get(sampleId);
+            var sampleSolutionPath = BundledSampleCatalog.ResolveSolutionPath(sample.Id);
             var result = await _solutionAnalysisService.AnalyzeAsync(
                 sampleSolutionPath,
                 AnalysisInputTrust.TrustedLocalDevelopment,
@@ -101,6 +104,18 @@ public sealed class AnalysisController : ControllerBase
         {
             return NotFound(exception.Message);
         }
+        catch (ArgumentException exception)
+        {
+            return BadRequest(exception.Message);
+        }
+    }
+
+    [HttpGet("samples")]
+    [AllowAnonymous]
+    [ProducesResponseType<IReadOnlyList<BundledSampleSummary>>(StatusCodes.Status200OK)]
+    public ActionResult<IReadOnlyList<BundledSampleSummary>> GetSamples()
+    {
+        return Ok(BundledSampleCatalog.List());
     }
 
     [HttpPost("analyze-zip")]
@@ -213,7 +228,13 @@ public sealed class AnalysisController : ControllerBase
 
         try
         {
-            var sampleSolutionPath = SolutionAnalysisService.ResolveSampleSolutionPath();
+            var sample = BundledSampleCatalog.FindBySolutionName(detail.Summary.SolutionName);
+            if (sample is null)
+            {
+                return BadRequest("The sample used by this report is no longer available.");
+            }
+
+            var sampleSolutionPath = BundledSampleCatalog.ResolveSolutionPath(sample.Id);
             var result = await _solutionAnalysisService.AnalyzeAsync(
                 sampleSolutionPath,
                 AnalysisInputTrust.TrustedLocalDevelopment,

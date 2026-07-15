@@ -32,6 +32,19 @@ configuration, and API-readiness issues. It validates that major rule families,
 source linking, architecture mapping, scoring, suppressions, and report exports
 remain visible in a controlled demonstration.
 
+### Built-in focused samples
+
+Five compact focused solutions complement SampleShop:
+
+- **CleanMinimalApi** validates a clean minimal API and near-empty report.
+- **RiskyMinimalApi** validates API, CORS, JWT, HTTPS, health-check, and exception-handling findings.
+- **MvcWebUiNoSwagger** validates that MVC/Razor UI intent does not require Swagger.
+- **BadEfMigration** validates destructive `Up()` migration detection and scoped DbContext lifetime safety.
+- **MissingDiRegistration** validates DI002 for custom services while excluding framework-provided dependencies.
+
+Each sample README documents a loose expected score range, expected findings,
+forbidden findings, and the analyzer categories it exercises.
+
 ### SchemaArchitect
 
 SchemaArchitect represents a Web UI-oriented multi-project application. It has

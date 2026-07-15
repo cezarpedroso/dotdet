@@ -5,6 +5,9 @@ async function analyzeSample(page: Page) {
   await page.goto('/')
   await expect(page.getByRole('heading', { name: 'Production readiness, grounded in your code.' })).toBeVisible()
   await page.getByRole('button', { name: 'Run sample analysis' }).click()
+  await expect(page).toHaveURL(/\/samples$/)
+  await expect(page.getByRole('heading', { name: 'Choose a sample to analyze' })).toBeVisible()
+  await page.getByRole('button', { name: 'Analyze Sample Shop' }).click()
   await expect(page.getByRole('button', { name: 'Overview' })).toBeVisible({ timeout: 60_000 })
 }
 
@@ -43,6 +46,27 @@ test.describe('DotDet critical smoke flows', () => {
     await expect(page.getByRole('button', { name: /Analyze Sample Project/ })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Login with GitHub' })).toHaveCount(0)
     await expect(page.locator('#solution-path')).toHaveCount(0)
+
+    await page.getByRole('button', { name: /Analyze Sample Project/ }).click()
+    await expect(page).toHaveURL(/\/analyze$/)
+    await expect(page.getByRole('heading', { name: 'Sample Projects' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Analyze Clean Minimal API' })).toBeVisible()
+  })
+
+  test('public sample catalog lists varied calibration projects', async ({ page }) => {
+    await page.goto('/')
+    await page.getByRole('button', { name: 'Run sample analysis' }).click()
+
+    await expect(page).toHaveURL(/\/samples$/)
+    await expect(page.getByRole('heading', { name: 'Choose a sample to analyze' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Clean Minimal API' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Risky Minimal API' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'MVC Web UI, No Swagger' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Destructive EF Migration' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Missing DI Registration' })).toBeVisible()
+    await expect(page.getByText('High readiness').first()).toBeVisible()
+    await expect(page.getByText('Medium readiness').first()).toBeVisible()
+    await expect(page.getByText('Low readiness').first()).toBeVisible()
   })
 
   test('public Docs and Changelog provide connected release documentation', async ({ page }) => {

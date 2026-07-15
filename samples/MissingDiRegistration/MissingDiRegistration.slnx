@@ -1,0 +1,7 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/MissingDiRegistration.Api/MissingDiRegistration.Api.csproj" />
+    <Project Path="src/MissingDiRegistration.Application/MissingDiRegistration.Application.csproj" />
+    <Project Path="src/MissingDiRegistration.Domain/MissingDiRegistration.Domain.csproj" />
+  </Folder>
+</Solution>

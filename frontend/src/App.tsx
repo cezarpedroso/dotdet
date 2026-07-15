@@ -49,7 +49,7 @@ type ProjectFilter = 'All' | string
 type SortMode = 'Severity' | 'Category' | 'Project' | 'File'
 type AnalysisMode = 'path' | 'zip'
 type AppPage = 'Overview' | 'Findings' | 'Code Explorer' | 'Architecture' | 'Rule Explorer' | 'Settings' | 'Docs' | 'Contact'
-type StartPage = 'Home' | 'Docs' | 'Contact' | 'Changelog' | 'Dashboard' | 'Analyze' | 'Reports' | 'Settings'
+type StartPage = 'Home' | 'Docs' | 'Contact' | 'Changelog' | 'Privacy' | 'Terms' | 'Samples' | 'Dashboard' | 'Analyze' | 'Reports' | 'Settings'
 type AnalyzeTab = 'GitHub Repository' | 'Upload ZIP' | 'Sample Project'
 type ResizePanel = 'explorer' | 'guide'
 type DensityMode = 'Compact' | 'Comfortable'
@@ -368,6 +368,17 @@ type GitHubRepositoryListingResponse = {
   }>
 }
 
+type BundledSampleSummary = {
+  id: string
+  name: string
+  description: string
+  readinessLevel: 'High' | 'Medium' | 'Low'
+  expectedScoreMinimum: number
+  expectedScoreMaximum: number
+  categories: string[]
+  projectCount: number
+}
+
 const localApiHost =
   typeof window !== 'undefined' && ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname)
     ? window.location.hostname
@@ -467,17 +478,23 @@ const selectedRowClass = 'bg-[#252a26] border-l-2 border-l-[#2ea043]'
 
 function App() {
   const [storedWorkbenchState] = useState(() => loadStoredWorkbenchState())
+  const [initialStartPage] = useState(() => getStartPageFromPath(Boolean(storedWorkbenchState.result)))
+  const isInitialPublicDocumentPage = ['Docs', 'Contact', 'Changelog', 'Privacy', 'Terms', 'Samples'].includes(initialStartPage)
   const [solutionPath] = useState('')
   const [zipFile, setZipFile] = useState<File | null>(null)
-  const [result, setResult] = useState<AnalysisResult | null>(storedWorkbenchState.result)
+  const [result, setResult] = useState<AnalysisResult | null>(isInitialPublicDocumentPage ? null : storedWorkbenchState.result)
   const [ruleCatalog, setRuleCatalog] = useState<RuleDocumentation[]>([])
   const [ruleCatalogError, setRuleCatalogError] = useState<string | null>(null)
-  const [startPage, setStartPage] = useState<StartPage>(() => getStartPageFromPath(Boolean(storedWorkbenchState.result)))
+  const [startPage, setStartPage] = useState<StartPage>(initialStartPage)
   const [authUser, setAuthUser] = useState<AuthUser | null>(null)
   const [authLoading, setAuthLoading] = useState(true)
   const [analysisHistory, setAnalysisHistory] = useState<AnalysisHistorySummary[]>([])
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyError, setHistoryError] = useState<string | null>(null)
+  const [samples, setSamples] = useState<BundledSampleSummary[]>([])
+  const [samplesLoading, setSamplesLoading] = useState(true)
+  const [samplesError, setSamplesError] = useState<string | null>(null)
+  const [analyzingSampleId, setAnalyzingSampleId] = useState<string | null>(null)
   const [analyzeTab, setAnalyzeTab] = useState<AnalyzeTab>('Upload ZIP')
   const [density, setDensity] = useState<DensityMode>(() => getStoredString(densityStorageKey, 'Compact', ['Compact', 'Comfortable'] as const))
   const [commandBarMode, setCommandBarMode] = useState<CommandBarMode>(() =>
@@ -618,7 +635,11 @@ function App() {
         }
 
         setAuthUser(auth.isAuthenticated ? normalizeAuthUser(auth.user) : null)
-        if (auth.isAuthenticated && window.location.pathname === '/') {
+        if (auth.isAuthenticated && window.location.pathname.toLowerCase().startsWith('/samples')) {
+          setAnalyzeTab('Sample Project')
+          navigateToPath('/analyze', true)
+          setStartPage('Analyze')
+        } else if (auth.isAuthenticated && window.location.pathname === '/') {
           navigateToPath('/dashboard', true)
           setStartPage('Dashboard')
         } else if (
@@ -637,6 +658,39 @@ function App() {
       .finally(() => {
         if (!cancelled) {
           setAuthLoading(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+
+    fetch(`${API_BASE_URL}/api/analysis/samples`)
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(`Sample catalog request failed with HTTP ${response.status}`)
+        }
+
+        return response.json() as Promise<BundledSampleSummary[]>
+      })
+      .then((catalog) => {
+        if (!cancelled) {
+          setSamples(catalog)
+          setSamplesError(null)
+        }
+      })
+      .catch((caughtError) => {
+        if (!cancelled) {
+          setSamplesError(caughtError instanceof Error ? caughtError.message : 'Sample catalog could not be loaded.')
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setSamplesLoading(false)
         }
       })
 
@@ -826,9 +880,14 @@ function App() {
     await runAnalysis()
   }
 
-  async function analyzeSample() {
+  async function analyzeSample(sampleId = 'sample-shop') {
     setZipFile(null)
-    await runAnalysis('sample', '', null)
+    setAnalyzingSampleId(sampleId)
+    try {
+      await runAnalysis('sample', '', null, sampleId)
+    } finally {
+      setAnalyzingSampleId(null)
+    }
   }
 
   async function analyzeGitHubRepository(repositoryInput: string) {
@@ -877,7 +936,12 @@ function App() {
     }
   }
 
-  async function runAnalysis(requestMode: AnalysisMode | 'sample' = 'zip', requestPath = solutionPath, requestFile = zipFile) {
+  async function runAnalysis(
+    requestMode: AnalysisMode | 'sample' = 'zip',
+    requestPath = solutionPath,
+    requestFile = zipFile,
+    sampleId = 'sample-shop',
+  ) {
     const hasInput = requestMode === 'path' ? requestPath.trim().length > 0 : requestFile !== null
     if (requestMode !== 'sample' && !hasInput) {
       return
@@ -898,7 +962,7 @@ function App() {
     try {
       const response =
         requestMode === 'sample'
-          ? await fetch(`${API_BASE_URL}/api/analysis/analyze-sample`, {
+          ? await fetch(`${API_BASE_URL}/api/analysis/analyze-sample?sampleId=${encodeURIComponent(sampleId)}`, {
               method: 'POST',
               credentials: 'include',
             })
@@ -919,6 +983,9 @@ function App() {
       const analysis = (await response.json()) as AnalysisResult
       setResult(analysis)
       setStartPage('Analyze')
+      if (requestMode === 'sample') {
+        navigateToPath('/analyze')
+      }
       setActivePage('Code Explorer')
       if (authUser) {
         await refreshHistory()
@@ -1237,12 +1304,25 @@ function App() {
           <DocsPage />
         ) : startPage === 'Contact' ? (
           <ContactPage />
+        ) : startPage === 'Privacy' ? (
+          <PrivacyPage />
+        ) : startPage === 'Terms' ? (
+          <TermsPage />
+        ) : !authUser && startPage === 'Samples' ? (
+          <SampleSelectionPage
+            analyzingSampleId={analyzingSampleId}
+            error={samplesError || error}
+            isAnalyzing={isLoading}
+            isLoading={samplesLoading}
+            onAnalyze={analyzeSample}
+            samples={samples}
+          />
         ) : !authUser && startPage === 'Changelog' ? (
           <ChangelogPage />
         ) : !authUser ? (
           <HomePage
             onLogin={loginWithGitHub}
-            onAnalyzeSample={analyzeSample}
+            onBrowseSamples={() => setStartPageAndPath('Samples')}
           />
         ) : startPage === 'Dashboard' ? (
           <DashboardPage
@@ -1251,7 +1331,6 @@ function App() {
             historyError={historyError}
             historyLoading={historyLoading}
             isLoading={isLoading}
-            onAnalyzeSample={analyzeSample}
             onExportHistory={exportHistoryReport}
             onOpenAnalyze={openAnalyzeTab}
             onOpenHistory={openHistoryReport}
@@ -1274,6 +1353,10 @@ function App() {
             }}
             onFileChange={onFileChange}
             onSubmit={analyze}
+            analyzingSampleId={analyzingSampleId}
+            samples={samples}
+            samplesError={samplesError}
+            samplesLoading={samplesLoading}
             zipFile={zipFile}
           />
         ) : startPage === 'Reports' ? (
@@ -1292,7 +1375,7 @@ function App() {
         ) : (
           <HomePage
             onLogin={loginWithGitHub}
-            onAnalyzeSample={analyzeSample}
+            onBrowseSamples={() => setStartPageAndPath('Samples')}
           />
         )
       ) : (
@@ -1477,7 +1560,14 @@ function AppShell({
   const [isExportMenuOpen, setExportMenuOpen] = useState(false)
   const [isProductMenuOpen, setProductMenuOpen] = useState(false)
 
-  const isPublicPage = startPage === 'Home' || startPage === 'Docs' || startPage === 'Contact' || startPage === 'Changelog'
+  const isPublicPage =
+    startPage === 'Home'
+    || startPage === 'Docs'
+    || startPage === 'Contact'
+    || startPage === 'Changelog'
+    || startPage === 'Privacy'
+    || startPage === 'Terms'
+    || startPage === 'Samples'
 
   if (!result && !authUser && isPublicPage) {
     return (
@@ -1893,10 +1983,10 @@ const landingWorkflow = [
 ] as const
 
 function HomePage({
-  onAnalyzeSample,
+  onBrowseSamples,
   onLogin,
 }: {
-  onAnalyzeSample: () => void
+  onBrowseSamples: () => void
   onLogin: () => void
 }) {
   return (
@@ -1916,7 +2006,7 @@ function HomePage({
                   Login with GitHub
                   <ChevronRight className="h-4 w-4" aria-hidden="true" />
                 </button>
-                <button type="button" onClick={onAnalyzeSample} className="det-secondary-cta det-landing-secondary-cta">
+                <button type="button" onClick={onBrowseSamples} className="det-secondary-cta det-landing-secondary-cta">
                   <Play className="h-3.5 w-3.5" aria-hidden="true" />
                   Run sample analysis
                 </button>
@@ -2020,11 +2110,129 @@ function HomePage({
           </div>
           <div className="det-landing-final-actions">
             <button type="button" onClick={onLogin} className="det-primary-cta"><GitHubMark className="h-4 w-4" />Login with GitHub <ChevronRight className="h-4 w-4" aria-hidden="true" /></button>
-            <button type="button" onClick={onAnalyzeSample} className="det-secondary-cta">Explore sample project</button>
+            <button type="button" onClick={onBrowseSamples} className="det-secondary-cta">Explore sample projects</button>
           </div>
         </section>
       </div>
     </section>
+  )
+}
+
+function SampleSelectionPage({
+  analyzingSampleId,
+  error,
+  isAnalyzing,
+  isLoading,
+  onAnalyze,
+  samples,
+}: {
+  analyzingSampleId: string | null
+  error: string | null
+  isAnalyzing: boolean
+  isLoading: boolean
+  onAnalyze: (sampleId: string) => void
+  samples: BundledSampleSummary[]
+}) {
+  return (
+    <section className="det-samples-page">
+      <div className="det-samples-shell">
+        <header className="det-samples-header">
+          <div className="det-section-kicker">Built-in calibration projects</div>
+          <h1>Choose a sample to analyze</h1>
+          <p>
+            Compare how DotDet evaluates different ASP.NET Core architectures, production safeguards, and readiness levels. Each project includes documented expected and forbidden findings.
+          </p>
+        </header>
+
+        {isAnalyzing ? <AnalysisProgress /> : null}
+        {error ? <InlineError message={error} /> : null}
+
+        <SampleCatalog
+          analyzingSampleId={analyzingSampleId}
+          isAnalyzing={isAnalyzing}
+          isLoading={isLoading}
+          onAnalyze={onAnalyze}
+          samples={samples}
+          variant="workspace"
+        />
+      </div>
+    </section>
+  )
+}
+
+function SampleCatalog({
+  analyzingSampleId,
+  isAnalyzing,
+  isLoading,
+  onAnalyze,
+  samples,
+  variant = 'public',
+}: {
+  analyzingSampleId: string | null
+  isAnalyzing: boolean
+  isLoading: boolean
+  onAnalyze: (sampleId: string) => void
+  samples: BundledSampleSummary[]
+  variant?: 'public' | 'workspace'
+}) {
+  if (isLoading) {
+    return (
+      <div className="det-sample-catalog-loading" role="status">
+        <div className="det-analysis-spinner" aria-hidden="true" />
+        Loading sample catalog...
+      </div>
+    )
+  }
+
+  return (
+    <div className={`det-sample-grid ${variant === 'workspace' ? 'det-sample-grid-workspace' : ''}`}>
+      {variant === 'workspace' ? (
+        <div className="det-sample-list-header" aria-hidden="true">
+          <span />
+          <span>Sample</span>
+          <span>Readiness</span>
+          <span>Score</span>
+          <span>Projects</span>
+          <span>Analyzer focus</span>
+          <span />
+        </div>
+      ) : null}
+      {samples.map((sample, index) => {
+        const isCurrent = analyzingSampleId === sample.id
+        return (
+          <article key={sample.id} className="det-sample-card">
+            <div className="det-sample-card-index">{String(index + 1).padStart(2, '0')}</div>
+            <div className="det-sample-card-main">
+              <div className="det-sample-card-heading">
+                <div>
+                  <h2>{sample.name}</h2>
+                  <p>{sample.description}</p>
+                </div>
+                <span className={`det-readiness-label det-readiness-label-${sample.readinessLevel.toLowerCase()}`}>
+                  {sample.readinessLevel} readiness
+                </span>
+              </div>
+
+              <dl className="det-sample-metadata">
+                <div><dt>Expected score</dt><dd>{sample.expectedScoreMinimum}-{sample.expectedScoreMaximum}</dd></div>
+                <div><dt>Projects</dt><dd>{sample.projectCount}</dd></div>
+                <div><dt>Exercises</dt><dd>{sample.categories.join(' / ')}</dd></div>
+              </dl>
+            </div>
+            <button
+              type="button"
+              onClick={() => onAnalyze(sample.id)}
+              disabled={isAnalyzing}
+              className="det-sample-analyze-button"
+              aria-label={`Analyze ${sample.name}`}
+            >
+              {isCurrent ? <RefreshCw className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : <Play className="h-3.5 w-3.5" aria-hidden="true" />}
+              {isCurrent ? 'Analyzing' : 'Analyze sample'}
+            </button>
+          </article>
+        )
+      })}
+    </div>
   )
 }
 
@@ -2038,6 +2246,8 @@ const docsQuickLinks: Array<{
   { label: 'Getting started', description: 'Run DotDet locally and analyze the bundled sample.', href: DOTDET_README_URL, icon: Play, section: 'Start' },
   { label: 'Security & privacy', description: 'Understand source, token, history, and archive boundaries.', href: `${DOTDET_DOCS_URL}/security.md`, icon: ShieldCheck, section: 'Trust' },
   { label: 'Private GitHub repositories', description: 'Review permissions, token handling, and disconnect behavior.', href: `${DOTDET_DOCS_URL}/private-github-security.md`, icon: FolderGit2, section: 'Trust' },
+  { label: 'Privacy Policy', description: 'Review what the v0.1 Preview collects, stores, exports, and deletes.', href: '/privacy', icon: FileText, section: 'Trust' },
+  { label: 'Terms of Use', description: 'Preview terms, permitted use, limitations, and user responsibilities.', href: '/terms', icon: FileText, section: 'Trust' },
   { label: 'Engine maturity', description: 'See current coverage, fidelity, and calibration status.', href: `${DOTDET_DOCS_URL}/engine-maturity.md`, icon: FileSearch, section: 'Engine' },
   { label: 'Known limitations', description: 'Read the boundaries of the v0.1 Preview engine and analysis model.', href: `${DOTDET_DOCS_URL}/known-limitations.md`, icon: AlertTriangle, section: 'Preview' },
   { label: 'Roadmap', description: 'Review planned calibration, worker, branch, and PR work.', href: `${DOTDET_DOCS_URL}/roadmap.md`, icon: GitBranch, section: 'Project' },
@@ -2064,6 +2274,8 @@ const docsFullIndex = [
   ['Project README', DOTDET_README_URL],
   ['Security', `${DOTDET_DOCS_URL}/security.md`],
   ['Private GitHub security', `${DOTDET_DOCS_URL}/private-github-security.md`],
+  ['Privacy Policy', '/privacy'],
+  ['Terms of Use', '/terms'],
   ['Engine maturity', `${DOTDET_DOCS_URL}/engine-maturity.md`],
   ['Rule quality principles', `${DOTDET_DOCS_URL}/rule-quality.md`],
   ['Calibration', `${DOTDET_DOCS_URL}/calibration.md`],
@@ -2254,7 +2466,9 @@ function DocsPage() {
                 {docsFullIndex.map(([label, href]) => (
                   <a key={label} href={href}>
                     <span>{label}</span>
-                    <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                    {href.startsWith('http')
+                      ? <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                      : <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />}
                   </a>
                 ))}
                 <a href="/changelog">
@@ -2334,6 +2548,184 @@ const changelogSections = [
     ],
   },
 ]
+
+const termsSections = [
+  {
+    title: 'Preview status',
+    items: [
+      'DotDet v0.1 Preview is under active development and calibration.',
+      'Features, rules, scores, reports, GitHub workflows, storage behavior, and availability may change without notice.',
+      'DotDet does not guarantee that a repository is production ready, secure, compliant, or free of defects.',
+      'Reports may include false positives, false negatives, incomplete findings, or recommendations that do not fit your architecture or deployment environment.',
+    ],
+  },
+  {
+    title: 'Permitted use',
+    items: [
+      'Use DotDet to analyze ASP.NET Core and .NET repositories that you are authorized to access and evaluate.',
+      'You are responsible for making sure you have the right to submit uploaded ZIP files, public repositories, private repositories, source files, configuration, metadata, and related materials.',
+      'Generated reports may be used as engineering review material, pull request context, planning input, or internal documentation.',
+    ],
+  },
+  {
+    title: 'Prohibited use',
+    items: [
+      'Do not analyze repositories or source code you do not have permission to access.',
+      "Do not attempt to access another user's repositories, reports, tokens, history, or suppressions.",
+      'Do not abuse, scrape, overload, automate excessive requests, bypass rate limits, upload malicious archives, attempt path traversal, or probe the service host.',
+      'Do not use generated reports to claim certification, audit completion, legal compliance, or security approval that DotDet has not provided.',
+    ],
+  },
+  {
+    title: 'User responsibility',
+    items: [
+      'DotDet is not a substitute for manual code review, security testing, threat modeling, dependency review, operational readiness review, legal review, or professional judgment.',
+      'Before acting on a finding, review the evidence, confidence, detection method, affected files, recommended pattern, and your own application context.',
+      'Scores and grades help prioritize review; they are not a release approval, warranty, guarantee, certification, or compliance statement.',
+    ],
+  },
+  {
+    title: 'Availability and license',
+    items: [
+      'DotDet v0.1 Preview is provided without an availability guarantee and may be unavailable, rate-limited, changed, or discontinued.',
+      'The source repository is public. Unless a license file is included, do not assume rights beyond those granted by the repository owner or hosting platform.',
+      'A formal release license should be selected before broader distribution or external contribution.',
+    ],
+  },
+] as const
+
+const privacySections = [
+  {
+    title: 'Information DotDet may collect',
+    items: [
+      'GitHub OAuth profile information needed to identify your session, such as GitHub account id, username, display name, avatar, and email if GitHub provides it.',
+      'Repository metadata needed to list or analyze repositories, such as owner, repository name, default branch, visibility, and selected repository id.',
+      'Uploaded ZIP files and downloaded GitHub repository archives during analysis.',
+      'Analysis results, scores, findings, evidence, rule metadata, dispositions, suppressions, exports, saved report history, sanitized browser state, operational logs, and error information.',
+    ],
+  },
+  {
+    title: 'GitHub OAuth and private repositories',
+    items: [
+      'DotDet uses GitHub OAuth for login. Private repository access requires an explicit repository access upgrade.',
+      'GitHub access tokens are handled on the backend and are not intentionally returned to the browser, included in reports, or exposed in saved history.',
+      'If you disconnect or remove access, DotDet should stop using the stored token for future private repository analysis. You may also revoke DotDet access from GitHub.',
+    ],
+  },
+  {
+    title: 'Repository and archive handling',
+    items: [
+      'Uploaded ZIP files and downloaded GitHub repository archives are used for analysis.',
+      'DotDet validates archives for unsafe paths and processes them in temporary DotDet-owned locations.',
+      'Archives and extracted temporary folders are intended to be cleaned up after analysis.',
+      'DotDet does not intentionally store downloaded ZIP files or extracted private repository folders as saved history.',
+    ],
+  },
+  {
+    title: 'Source preview, browser storage, and exports',
+    items: [
+      'Live analysis results may include capped source preview data so Code Explorer can show relevant files during the current session.',
+      'Saved history is sanitized and should preserve findings, evidence, scores, and report data without retaining full raw source files.',
+      'Browser storage is designed to restore recent UI state and sanitized analysis metadata without persisting full source previews, local server paths, GitHub tokens, or raw private repository source.',
+      'Human-readable exports are designed to include findings, evidence, snippets, recommendations, and links without dumping full source files by default.',
+    ],
+  },
+  {
+    title: 'Analysis boundaries and third parties',
+    items: [
+      'Local filesystem path analysis is blocked outside the Development environment.',
+      'Untrusted ZIP and GitHub repository inputs use safe syntax analysis in the web process unless isolated semantic analysis is explicitly configured.',
+      'DotDet may rely on GitHub for OAuth, repository metadata, repository authorization, and repository archive downloads, plus the hosting provider used to run the preview.',
+      'Those services process data under their own policies and controls.',
+    ],
+  },
+  {
+    title: 'Retention, deletion, and contact',
+    items: [
+      'DotDet v0.1 Preview currently stores saved analysis history and related report metadata for product functionality.',
+      'Raw source preview is intended to be live session data, not saved history. Temporary upload and repository archive data is intended to be deleted after analysis.',
+      'Logout or disconnect flows end the current session and stop future use of connected GitHub access. Saved history or report metadata may require separate deletion behavior depending on the current preview implementation.',
+    ],
+  },
+] as const
+
+function LegalPage({
+  eyebrow,
+  title,
+  intro,
+  sections,
+}: {
+  eyebrow: string
+  title: string
+  intro: string
+  sections: ReadonlyArray<{ title: string; items: readonly string[] }>
+}) {
+  return (
+    <section className="det-docs-page">
+      <div className="det-docs-shell det-simple-public-shell">
+        <header className="det-docs-header">
+          <div className="det-docs-eyebrow">{eyebrow}</div>
+          <h2>{title}</h2>
+          <p>{intro}</p>
+          <p className="det-docs-note">
+            This is not legal advice. These terms are provided for the DotDet preview project and may need review before broader production or commercial use.
+          </p>
+        </header>
+
+        <div className="det-changelog-timeline">
+          {sections.map((section, index) => (
+            <section key={section.title} className="det-changelog-item">
+              <div className="det-changelog-item-heading">
+                <span>{String(index + 1).padStart(2, '0')}</span>
+                <h3>{section.title}</h3>
+              </div>
+              <ul className="det-docs-bullets">
+                {section.items.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </section>
+          ))}
+        </div>
+
+        <section className="det-docs-section det-docs-emphasis-section">
+          <div className="det-docs-section-heading">
+            <div>
+              <span className="det-docs-section-index">Contact</span>
+              <h3>Questions</h3>
+            </div>
+          </div>
+          <p>
+            For questions about DotDet preview usage, privacy, deletion, or responsible handling of analysis data, contact{' '}
+            <a href="mailto:cezarapedroso@gmail.com" className="det-docs-inline-link">cezarapedroso@gmail.com</a>.
+          </p>
+        </section>
+      </div>
+    </section>
+  )
+}
+
+function TermsPage() {
+  return (
+    <LegalPage
+      eyebrow="Terms of Use"
+      title="DotDet Terms of Use"
+      intro="Preview terms for responsible use of DotDet, including repository access, report limitations, availability, and user responsibility."
+      sections={termsSections}
+    />
+  )
+}
+
+function PrivacyPage() {
+  return (
+    <LegalPage
+      eyebrow="Privacy Policy"
+      title="DotDet Privacy Policy"
+      intro="Current v0.1 Preview data-handling behavior for GitHub login, repository analysis, source preview, browser storage, exports, and saved history."
+      sections={privacySections}
+    />
+  )
+}
 
 function ContactPage() {
   return (
@@ -2450,6 +2842,9 @@ function PublicFooter({ onNavigate }: { onNavigate: (page: StartPage) => void })
           <a href="/docs" onClick={(event) => navigate(event, 'Docs')}>Docs</a>
           <a href="/changelog" onClick={(event) => navigate(event, 'Changelog')}>Changelog</a>
           <a href="/contact" onClick={(event) => navigate(event, 'Contact')}>Contact</a>
+          <a href="/privacy" onClick={(event) => navigate(event, 'Privacy')}>Privacy</a>
+          <a href="/terms" onClick={(event) => navigate(event, 'Terms')}>Terms</a>
+          <a href="https://www.linkedin.com/in/cezaramp/" target="_blank" rel="noreferrer">LinkedIn</a>
           <a href={DOTDET_REPOSITORY_URL} rel="noreferrer">GitHub</a>
           <a href={DOTDET_ISSUES_URL} rel="noreferrer">Issues</a>
         </nav>
@@ -2474,7 +2869,6 @@ function DashboardPage({
   historyError,
   historyLoading,
   isLoading,
-  onAnalyzeSample,
   onExportHistory,
   onOpenAnalyze,
   onOpenHistory,
@@ -2485,7 +2879,6 @@ function DashboardPage({
   historyError: string | null
   historyLoading: boolean
   isLoading: boolean
-  onAnalyzeSample: () => void
   onExportHistory: (id: string, format: ExportFormat) => void
   onOpenAnalyze: (tab: AnalyzeTab) => void
   onOpenHistory: (id: string) => void
@@ -2540,7 +2933,7 @@ function DashboardPage({
                 <span className="font-semibold text-slate-950">Upload ZIP</span>
                 <span className="text-xs leading-5 text-slate-500">Analyze a zipped .NET solution.</span>
               </button>
-              <button type="button" onClick={onAnalyzeSample} disabled={isLoading} className={analysisActionClass(false)}>
+              <button type="button" onClick={() => onOpenAnalyze('Sample Project')} disabled={isLoading} className={analysisActionClass(false)}>
                 <FileCode2 className="h-5 w-5 text-[#2ea043]" aria-hidden="true" />
                 <span className="font-semibold text-slate-950">Analyze Sample Project</span>
                 <span className="text-xs leading-5 text-slate-500">Open the included ASP.NET Core sample.</span>
@@ -2612,6 +3005,7 @@ function analysisActionClass(active: boolean) {
 
 function AnalyzePage({
   activeTab,
+  analyzingSampleId,
   canAnalyze,
   error,
   isLoading,
@@ -2621,18 +3015,25 @@ function AnalyzePage({
   onClearCachedAnalysisState,
   onFileChange,
   onSubmit,
+  samples,
+  samplesError,
+  samplesLoading,
   zipFile,
 }: {
   activeTab: AnalyzeTab
+  analyzingSampleId: string | null
   canAnalyze: boolean
   error: string | null
   isLoading: boolean
   onActiveTabChange: (tab: AnalyzeTab) => void
   onAnalyzeGitHubRepository: (repositoryInput: string) => Promise<void>
-  onAnalyzeSample: () => void
+  onAnalyzeSample: (sampleId: string) => void
   onClearCachedAnalysisState: () => void
   onFileChange: (event: ChangeEvent<HTMLInputElement>) => void
   onSubmit: (event: FormEvent<HTMLFormElement>) => void
+  samples: BundledSampleSummary[]
+  samplesError: string | null
+  samplesLoading: boolean
   zipFile: File | null
 }) {
   const [repoState, setRepoState] = useState<GitHubRepositoryListingResponse | null>(null)
@@ -2890,25 +3291,29 @@ function AnalyzePage({
         ) : null}
 
         {activeTab === 'Sample Project' ? (
-          <section className="det-auth-upload-panel">
-            <div className="flex items-start gap-3">
+          <section className="det-auth-upload-panel det-auth-sample-panel">
+            <div className="det-auth-sample-header flex items-start gap-3">
               <FileCode2 className="mt-0.5 h-5 w-5 text-[#2ea043]" aria-hidden="true" />
               <div>
-                <h2 className="text-base font-semibold text-slate-950">Sample Project</h2>
-                <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">
-                  Analyze the bundled ASP.NET Core sample to preview DotDet findings, source navigation, and report exports.
+                <h2 className="text-base font-semibold text-slate-950">Sample Projects</h2>
+                <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-500">
+                  Choose a calibration project to compare findings across ASP.NET Core host types and readiness levels.
                 </p>
               </div>
             </div>
 
             {isLoading ? <AnalysisProgress /> : null}
-            {error ? <InlineError message={error} /> : null}
+            {samplesError || error ? <InlineError message={samplesError || error || ''} /> : null}
 
-            <div className="mt-5">
-              <button type="button" onClick={onAnalyzeSample} disabled={isLoading} className="det-run-analysis-button">
-                <Play className="h-4 w-4" aria-hidden="true" />
-                Analyze Sample Project
-              </button>
+            <div className="det-auth-sample-list">
+              <SampleCatalog
+                analyzingSampleId={analyzingSampleId}
+                isAnalyzing={isLoading}
+                isLoading={samplesLoading}
+                onAnalyze={onAnalyzeSample}
+                samples={samples}
+                variant="workspace"
+              />
             </div>
           </section>
         ) : null}
@@ -5690,14 +6095,17 @@ function loadStoredWorkbenchState(): StoredWorkbenchState {
 }
 
 function getStartPageFromPath(hasStoredResult: boolean): StartPage {
-  if (hasStoredResult) {
-    return 'Dashboard'
-  }
-
   const path = window.location.pathname.toLowerCase()
   if (path.startsWith('/docs')) return 'Docs'
   if (path.startsWith('/contact')) return 'Contact'
   if (path.startsWith('/changelog')) return 'Changelog'
+  if (path.startsWith('/privacy')) return 'Privacy'
+  if (path.startsWith('/terms')) return 'Terms'
+  if (path.startsWith('/samples')) return 'Samples'
+  if (hasStoredResult) {
+    return 'Dashboard'
+  }
+
   if (path.startsWith('/dashboard')) return 'Dashboard'
   if (path.startsWith('/analyze')) return 'Analyze'
   if (path.startsWith('/reports')) return 'Reports'
@@ -5714,8 +6122,11 @@ function getPathForStartPage(page: StartPage) {
     Dashboard: '/dashboard',
     Docs: '/docs',
     Home: '/',
+    Privacy: '/privacy',
     Reports: '/reports',
+    Samples: '/samples',
     Settings: '/settings',
+    Terms: '/terms',
   }[page]
 }
 

@@ -658,6 +658,93 @@ public sealed class SemanticAnalysisTests
     }
 
     [Fact]
+    public void BundledSampleCatalog_ExposesStableIdsWithoutFilesystemPaths()
+    {
+        var samples = BundledSampleCatalog.List();
+
+        Assert.Equal(6, samples.Count);
+        Assert.Equal(BundledSampleCatalog.DefaultSampleId, samples[0].Id);
+        Assert.Contains(samples, sample => sample.Id == "clean-minimal-api" && sample.ReadinessLevel == "High");
+        Assert.Contains(samples, sample => sample.Id == "risky-minimal-api" && sample.ReadinessLevel == "Low");
+        Assert.Contains(samples, sample => sample.Id == "mvc-web-ui-no-swagger");
+        Assert.Contains(samples, sample => sample.Id == "bad-ef-migration");
+        Assert.Contains(samples, sample => sample.Id == "missing-di-registration");
+        Assert.DoesNotContain(samples, sample =>
+            sample.Description.Contains("C:\\", StringComparison.OrdinalIgnoreCase)
+            || sample.Description.Contains("/tmp/", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task AnalysisController_AnalyzeSample_RejectsUnknownIdsSafely()
+    {
+        var controller = new AnalysisController(
+            CreateService(),
+            new ZipExtractionService(),
+            new AnalysisHistoryStore(Path.Combine(Path.GetTempPath(), $"dotdet-history-{Guid.NewGuid():N}.json")),
+            new TestWebHostEnvironment { EnvironmentName = Environments.Development },
+            NullLogger<AnalysisController>.Instance)
+        {
+            ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }
+        };
+
+        var response = await controller.AnalyzeSample(CancellationToken.None, "../../private/Secret.sln");
+        var badRequest = Assert.IsType<BadRequestObjectResult>(response.Result);
+        var message = Assert.IsType<string>(badRequest.Value);
+
+        Assert.Equal("The selected sample is not available. (Parameter 'sampleId')", message);
+        Assert.DoesNotContain("C:\\", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(Path.GetTempPath(), message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task BundledCalibrationSamples_ProduceExpectedFindingsAndLooseScoreBands()
+    {
+        var service = CreateService();
+        var results = new Dictionary<string, AnalysisResult>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var sample in BundledSampleCatalog.List())
+        {
+            var result = await service.AnalyzeAsync(
+                BundledSampleCatalog.ResolveSolutionPath(sample.Id),
+                AnalysisInputTrust.TrustedLocalDevelopment,
+                CancellationToken.None);
+
+            Assert.InRange(result.OverallScore, sample.ExpectedScoreMinimum, sample.ExpectedScoreMaximum);
+            Assert.NotEmpty(result.ProjectGraph.Projects);
+            results[sample.Id] = result;
+        }
+
+        Assert.InRange(results["clean-minimal-api"].OverallScore, 88, 100);
+        Assert.DoesNotContain(results["clean-minimal-api"].Issues, AnalyzerUtilities.IsActiveProductionFinding);
+
+        var risky = results["risky-minimal-api"];
+        Assert.InRange(risky.OverallScore, 70, 90);
+        Assert.Contains(risky.Issues, issue => issue.RuleId == "API003");
+        Assert.Contains(risky.Issues, issue => issue.RuleId == "API004");
+        Assert.Contains(risky.Issues, issue => issue.RuleId == "API005");
+
+        var mvc = results["mvc-web-ui-no-swagger"];
+        Assert.InRange(mvc.OverallScore, 82, 100);
+        Assert.DoesNotContain(mvc.Issues, issue => issue.RuleId is "API002" or "API003");
+
+        var migration = results["bad-ef-migration"];
+        Assert.InRange(migration.OverallScore, 85, 100);
+        Assert.Contains(migration.Issues, issue => issue.RuleId == "EF004");
+        Assert.DoesNotContain(migration.Issues, issue => issue.RuleId == "EF001");
+
+        var dependencyInjection = results["missing-di-registration"];
+        Assert.InRange(dependencyInjection.OverallScore, 75, 95);
+        Assert.Contains(dependencyInjection.Issues, issue =>
+            issue.RuleId == "DI002"
+            && issue.Title.Contains("ITemplateRenderer", StringComparison.Ordinal));
+        Assert.DoesNotContain(dependencyInjection.Issues, issue =>
+            issue.RuleId == "DI002"
+            && (issue.Title.Contains("ILogger", StringComparison.Ordinal)
+                || issue.Title.Contains("IConfiguration", StringComparison.Ordinal)
+                || issue.Title.Contains("IOptions", StringComparison.Ordinal)));
+    }
+
+    [Fact]
     public async Task AnalysisHistoryStore_ResanitizesLegacyRootCauseKeysOnRead()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"dotdet-legacy-history-{Guid.NewGuid():N}");

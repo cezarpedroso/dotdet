@@ -13,6 +13,8 @@ analysis maturity, and privacy boundaries.
 - [Security](security.md)
 - [Private GitHub repository security](private-github-security.md)
 - [Dependency advisory status](security-advisories.md)
+- [Privacy Policy](privacy.md)
+- [Terms of Use](terms.md)
 
 ## Engine and analysis quality
 
@@ -25,6 +27,11 @@ analysis maturity, and privacy boundaries.
 - [Known limitations](known-limitations.md)
 - [Roadmap](roadmap.md)
 - [Support and responsible disclosure](security.md#responsible-disclosure)
+
+## Legal and preview notices
+
+- [Terms of Use](terms.md)
+- [Privacy Policy](privacy.md)
 
 The public documentation intentionally excludes credentials, operator
 configuration, private infrastructure, and organization-specific notes.

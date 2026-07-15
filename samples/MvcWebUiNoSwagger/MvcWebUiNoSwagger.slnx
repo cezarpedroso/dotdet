@@ -1,0 +1,7 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/MvcWebUiNoSwagger.Core/MvcWebUiNoSwagger.Core.csproj" />
+    <Project Path="src/MvcWebUiNoSwagger.Services/MvcWebUiNoSwagger.Services.csproj" />
+    <Project Path="src/MvcWebUiNoSwagger.Web/MvcWebUiNoSwagger.Web.csproj" />
+  </Folder>
+</Solution>

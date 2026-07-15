@@ -2,6 +2,7 @@
 
 # Logs
 logs
+work/logs/
 *.log
 *.log.*
 npm-debug.log*
@@ -70,6 +71,9 @@ coverage/
 .env.*.local
 
 # Temporary files
+uploads/
+temp/
+tmp/
 *.tmp
 *.temp
 *.bak

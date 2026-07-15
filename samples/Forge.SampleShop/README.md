@@ -18,6 +18,10 @@ The sample is designed to produce findings across multiple categories:
 - CORS allows any origin.
 - API omits HTTPS redirection, authentication middleware, health checks, global exception handling, structured logging, and validation patterns.
 
+Expected readiness level: Medium. Expected score range: 82-92
+under DotDet's conservative weighted scoring and confirmed-error caps. The score
+should be read together with the breadth and severity of the findings.
+
 Build the sample:
 
 ```powershell

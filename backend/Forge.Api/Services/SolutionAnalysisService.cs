@@ -186,25 +186,7 @@ public sealed partial class SolutionAnalysisService
 
     public static string ResolveSampleSolutionPath()
     {
-        var directory = new DirectoryInfo(AppContext.BaseDirectory);
-
-        while (directory is not null)
-        {
-            var candidate = Path.Combine(
-                directory.FullName,
-                "samples",
-                "Forge.SampleShop",
-                "Forge.SampleShop.slnx");
-
-            if (File.Exists(candidate))
-            {
-                return AnalyzerUtilities.NormalizePath(candidate);
-            }
-
-            directory = directory.Parent;
-        }
-
-        throw new FileNotFoundException("The bundled sample solution could not be found.");
+        return BundledSampleCatalog.ResolveSolutionPath();
     }
 
     private async Task<SolutionAnalysisContext> BuildContextAsync(

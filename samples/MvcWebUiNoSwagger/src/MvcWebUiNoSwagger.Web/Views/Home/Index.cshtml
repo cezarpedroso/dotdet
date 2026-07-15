@@ -1,0 +1,9 @@
+@model IReadOnlyList<MvcWebUiNoSwagger.Core.Support.SupportCase>
+@{
+    ViewData["Title"] = "Support cases";
+}
+<h1>Recent support cases</h1>
+@foreach (var item in Model)
+{
+    <article><strong>@item.Customer</strong> - @item.Status</article>
+}

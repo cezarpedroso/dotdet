@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/RiskyMinimalApi.Api/RiskyMinimalApi.Api.csproj" />
+    <Project Path="src/RiskyMinimalApi.Application/RiskyMinimalApi.Application.csproj" />
+    <Project Path="src/RiskyMinimalApi.Core/RiskyMinimalApi.Core.csproj" />
+    <Project Path="src/RiskyMinimalApi.Persistence/RiskyMinimalApi.Persistence.csproj" />
+  </Folder>
+</Solution>

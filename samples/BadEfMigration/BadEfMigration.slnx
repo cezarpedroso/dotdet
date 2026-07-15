@@ -1,0 +1,7 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/BadEfMigration.Api/BadEfMigration.Api.csproj" />
+    <Project Path="src/BadEfMigration.Domain/BadEfMigration.Domain.csproj" />
+    <Project Path="src/BadEfMigration.Persistence/BadEfMigration.Persistence.csproj" />
+  </Folder>
+</Solution>

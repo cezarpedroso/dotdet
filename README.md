@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/dotdet-readme-cover.png" alt="DotDet logo" width="320" />
+</p>
+
 # DotDet
 
 > **v0.1 Preview** - DotDet is under active calibration. Review findings and
@@ -74,6 +78,10 @@ Read [Security](docs/security.md) and
 [Private GitHub repository security](docs/private-github-security.md) before
 enabling private-repository access.
 
+Review the public-preview [Terms of Use](docs/terms.md) and
+[Privacy Policy](docs/privacy.md) before sharing reports or analyzing code you
+do not personally own.
+
 ## Engine maturity
 
 The engine is in **Preview / Calibration**. DotDet combines Roslyn syntax and
@@ -101,7 +109,7 @@ experience by running the bundled sample analysis.
 backend/Forge.Api          ASP.NET Core API and analysis engine
 backend/Forge.Api.Tests    Backend regression and analyzer tests
 frontend                   React/TypeScript workbench and Playwright tests
-samples/Forge.SampleShop   Intentionally imperfect demonstration solution
+samples                    Six built-in calibration solutions across readiness levels
 docs                       Public product, security, and analysis documentation
 Forge.slnx                 .NET solution
 ```
@@ -220,6 +228,8 @@ Start with the [DotDet documentation index](docs/README.md):
 
 - [Security](docs/security.md)
 - [Private GitHub repository security](docs/private-github-security.md)
+- [Terms of Use](docs/terms.md)
+- [Privacy Policy](docs/privacy.md)
 - [Engine maturity](docs/engine-maturity.md)
 - [Rule quality principles](docs/rule-quality.md)
 - [Calibration](docs/calibration.md)

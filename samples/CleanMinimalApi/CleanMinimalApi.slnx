@@ -1,0 +1,7 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/CleanMinimalApi.Api/CleanMinimalApi.Api.csproj" />
+    <Project Path="src/CleanMinimalApi.Application/CleanMinimalApi.Application.csproj" />
+    <Project Path="src/CleanMinimalApi.Domain/CleanMinimalApi.Domain.csproj" />
+  </Folder>
+</Solution>
