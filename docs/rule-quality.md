@@ -1,6 +1,6 @@
 # Rule Quality Principles
 
-DotDet rules should help an experienced .NET developer decide what to inspect and
+DotDet rules should help .NET developers decide what to inspect and
 fix next. Rule count is not a success metric. The preferred outcome is a smaller
 set of well-supported, contextual, and actionable findings.
 
