@@ -135,7 +135,9 @@ builder.Services
         options.Scope.Add("user:email");
         options.SaveTokens = false;
         options.CorrelationCookie.HttpOnly = true;
-        options.CorrelationCookie.SameSite = SameSiteMode.None;
+        options.CorrelationCookie.SameSite = builder.Environment.IsDevelopment()
+            ? SameSiteMode.Lax
+            : SameSiteMode.None;
         options.CorrelationCookie.SecurePolicy = builder.Environment.IsDevelopment()
             ? CookieSecurePolicy.SameAsRequest
             : CookieSecurePolicy.Always;

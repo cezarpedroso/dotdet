@@ -1520,7 +1520,7 @@ function AppShell({
                   aria-haspopup="menu"
                   onClick={() => setProductMenuOpen((current) => !current)}
                 >
-                  Product
+                  Products
                   <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
                 </button>
                 <div className="det-product-menu-panel" role="menu">
@@ -2071,7 +2071,39 @@ const docsFullIndex = [
   ['Roadmap', `${DOTDET_DOCS_URL}/roadmap.md`],
 ] as const
 
+const docsSectionLinks = [
+  ['quick-links', 'Quick links'],
+  ['analysis-sources', 'Analysis sources'],
+  ['analyzer-coverage', 'Analyzer coverage'],
+  ['security-privacy', 'Security and privacy'],
+  ['engine-maturity', 'Engine maturity'],
+  ['full-documentation', 'Full documentation'],
+] as const
+
 function DocsPage() {
+  const scrollToDocsSection = useCallback((event: ReactMouseEvent<HTMLAnchorElement>, sectionId: string) => {
+    event.preventDefault()
+
+    const target = document.getElementById(sectionId)
+    if (!target) {
+      return
+    }
+
+    const docsPage = target.closest('.det-docs-page') as HTMLElement | null
+    const scrollRoot = docsPage?.parentElement?.classList.contains('det-work-area') ? docsPage : null
+
+    if (scrollRoot) {
+      const rootRect = scrollRoot.getBoundingClientRect()
+      const targetRect = target.getBoundingClientRect()
+      const top = scrollRoot.scrollTop + targetRect.top - rootRect.top - 20
+      scrollRoot.scrollTo({ top: Math.max(0, top), behavior: 'smooth' })
+    } else {
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+
+    window.history.replaceState(null, '', `${window.location.pathname}#${sectionId}`)
+  }, [])
+
   return (
     <section className="det-docs-page">
       <div className="det-docs-shell">
@@ -2096,12 +2128,11 @@ function DocsPage() {
         <div className="det-docs-layout">
           <aside className="det-docs-toc" aria-label="Documentation sections">
             <span className="det-docs-toc-label">On this page</span>
-            <a href="#quick-links">Quick links</a>
-            <a href="#analysis-sources">Analysis sources</a>
-            <a href="#analyzer-coverage">Analyzer coverage</a>
-            <a href="#security-privacy">Security and privacy</a>
-            <a href="#engine-maturity">Engine maturity</a>
-            <a href="#full-documentation">Full documentation</a>
+            {docsSectionLinks.map(([sectionId, label]) => (
+              <a key={sectionId} href={`#${sectionId}`} onClick={(event) => scrollToDocsSection(event, sectionId)}>
+                {label}
+              </a>
+            ))}
           </aside>
 
           <div className="det-docs-content">

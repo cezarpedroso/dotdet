@@ -28,6 +28,11 @@
   --det-green-bright: #39d353;
   --det-green-muted: #2ea043;
   --det-sidebar-accent: #2ea043;
+  --det-background-surface:
+    radial-gradient(circle at 18% 0%, rgba(35, 46, 39, 0.1), transparent 34%),
+    linear-gradient(145deg, #0b100d 0%, #070b08 52%, #111711 100%);
+  --det-background-flat: #0b100d;
+  --det-background-panel: #101611;
 }
 
 * {
@@ -367,7 +372,7 @@ textarea {
 
 /* .det-specific surface adjustments to use tokens */
 .det-dashboard-page {
-  background: var(--det-panel);
+  background: transparent;
 }
 
 .det-overview-report {
@@ -407,7 +412,7 @@ textarea {
 }
 
 .det-dashboard-page {
-  background: var(--det-panel);
+  background: transparent;
 }
 
 .det-overview-workspace {
@@ -492,7 +497,7 @@ textarea {
 
 .det-public-shell {
   font-family: Inter, "Segoe UI Variable", "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-  background: #111412 !important;
+  background: var(--det-background-surface) !important;
 }
 
 .det-public-topbar {
@@ -689,12 +694,13 @@ textarea {
 .det-public-content {
   display: block;
   min-height: calc(100vh - 62px);
+  background: transparent;
 }
 
 .det-public-landing {
   position: relative;
   overflow: hidden;
-  background: #111412 !important;
+  background: transparent !important;
 }
 
 .det-landing-page {
@@ -1281,7 +1287,17 @@ textarea {
 }
 
 .det-docs-page {
-  background: #111412 !important;
+  background: transparent !important;
+}
+
+.det-work-area > .det-docs-page {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-behavior: smooth;
 }
 
 .det-docs-shell {
@@ -2634,7 +2650,7 @@ textarea {
   grid-template-columns: 218px minmax(0, 1fr);
   height: 100vh;
   min-height: 0;
-  background: var(--det-bg);
+  background: var(--det-background-surface);
 }
 
 .det-left-sidebar {
@@ -2712,7 +2728,7 @@ textarea {
   min-width: 0;
   min-height: 0;
   flex-direction: column;
-  background: var(--det-panel);
+  background: var(--det-background-surface);
 }
 
 .det-command-bar {
@@ -2738,6 +2754,7 @@ textarea {
   min-width: 0;
   flex: 1;
   overflow: hidden;
+  background: var(--det-background-surface);
 }
 
 .det-status-bar {
@@ -2956,9 +2973,9 @@ textarea {
 
 .night-mode {
   --det-bg: #0c100d;
-  --det-shell: #111613;
-  --det-panel: #151a17;
-  --det-panel-raised: #1b211d;
+  --det-shell: #0d120f;
+  --det-panel: #101611;
+  --det-panel-raised: #121914;
   --det-border: #2a332d;
   --det-border-subtle: #202822;
 }
@@ -3154,7 +3171,7 @@ textarea {
 }
 
 .det-ide-shell {
-  background: var(--det-bg);
+  background: var(--det-background-surface);
 }
 
 .det-left-sidebar {
@@ -3214,7 +3231,7 @@ textarea {
 }
 
 .det-main-shell {
-  background: #121713;
+  background: var(--det-background-surface);
 }
 
 .det-command-bar {
@@ -3268,7 +3285,7 @@ textarea {
 }
 
 .det-dashboard-page {
-  background: #121713;
+  background: transparent;
 }
 
 .det-auth-workspace {
@@ -3494,7 +3511,7 @@ textarea {
 /* Structural product redesign. */
 .det-public-shell {
   font-family: "Segoe UI Variable", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
-  background: #0c100d !important;
+  background: var(--det-background-surface) !important;
 }
 
 .det-public-topbar-inner {
@@ -3525,7 +3542,10 @@ textarea {
 .det-landing-hero-band {
   position: relative;
   border-bottom: 1px solid rgba(121, 140, 126, 0.14);
-  background: #101612;
+  background:
+    linear-gradient(90deg, rgba(7, 12, 8, 0.9) 0%, rgba(11, 18, 13, 0.78) 45%, rgba(8, 13, 10, 0.68) 100%),
+    url("/dotwallpaper22.png") center / cover no-repeat,
+    #101612;
 }
 
 .det-landing-hero-band::before,
@@ -4020,7 +4040,7 @@ textarea {
 
 .det-landing-signal-strip {
   border-bottom: 1px solid rgba(121, 140, 126, 0.16);
-  background: #0b0f0c;
+  background: rgba(12, 16, 13, 0.96);
 }
 
 .det-landing-signal-strip-inner {
@@ -4064,6 +4084,7 @@ textarea {
 
 .det-landing-content-page {
   padding: 0 0 78px;
+  background: transparent;
 }
 
 .det-proof-section {
@@ -4392,7 +4413,7 @@ textarea {
 }
 
 .det-overview-page {
-  background: #0e1310;
+  background: transparent;
 }
 
 .det-overview-canvas {
@@ -5370,6 +5391,148 @@ textarea {
 .night-mode table thead,
 .night-mode .det-overview-panel-heading {
   border-color: rgba(139, 150, 140, 0.11) !important;
+}
+
+/* Public/document pages inherit the shell background so no nested gradient box appears. */
+.det-public-content,
+.det-public-landing,
+.det-landing-page,
+.det-landing-content-page,
+.det-docs-page {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.det-landing-signal-strip {
+  border-bottom-color: rgba(139, 150, 140, 0.075) !important;
+  background: rgba(12, 16, 13, 0.96) !important;
+}
+
+.det-landing-signal-strip-inner > div {
+  border-right-color: rgba(139, 150, 140, 0.075) !important;
+}
+
+.det-proof-section,
+.det-landing-workflow,
+.det-capability-section,
+.det-landing-final-cta,
+.det-docs-header,
+.det-docs-section,
+.det-changelog-release-header,
+.det-changelog-item,
+.det-changelog-footer {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.night-mode .det-public-landing,
+.night-mode .det-landing-page,
+.night-mode .det-landing-content-page,
+.night-mode .det-proof-section,
+.night-mode .det-landing-workflow,
+.night-mode .det-capability-section,
+.night-mode .det-landing-final-cta,
+.night-mode .det-docs-page,
+.night-mode .det-docs-header,
+.night-mode .det-docs-section,
+.night-mode .det-changelog-release-header,
+.night-mode .det-changelog-item,
+.night-mode .det-changelog-footer {
+  background-color: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+.det-proof-section,
+.det-capability-section,
+.det-landing-workflow,
+.det-landing-final-cta {
+  border-top: 0 !important;
+  border-bottom-color: rgba(139, 150, 140, 0.075) !important;
+}
+
+.det-landing-workflow-list,
+.det-capability-list,
+.det-proof-list,
+.det-docs-link-list,
+.det-docs-definition-list,
+.det-docs-index-list {
+  border-color: rgba(139, 150, 140, 0.075) !important;
+}
+
+.det-landing-workflow-list,
+.det-capability-list {
+  gap: 28px 38px !important;
+  border: 0 !important;
+}
+
+.det-proof-row,
+.det-landing-workflow-step,
+.det-capability-row,
+.det-docs-link-row,
+.det-docs-definition-row,
+.det-docs-index-list a,
+.det-docs-mini-card {
+  background: transparent !important;
+  border-color: rgba(139, 150, 140, 0.075) !important;
+  box-shadow: none !important;
+}
+
+.det-landing-workflow-step,
+.det-capability-row,
+.det-capability-row:nth-child(2n),
+.det-capability-row:nth-child(3n) {
+  border: 0 !important;
+}
+
+.det-docs-emphasis-section {
+  border-left-color: rgba(57, 211, 83, 0.18) !important;
+  background: transparent !important;
+}
+
+/* Unified dark surface pass: public pages and authenticated workspace share one gradient system. */
+.det-public-shell,
+.det-ide-shell,
+.det-main-shell,
+.det-work-area,
+.det-dashboard-page,
+.det-overview-page,
+.det-rule-explorer-page {
+  background: var(--det-background-surface) !important;
+}
+
+.det-work-area > .det-dashboard-page,
+.det-work-area > .det-overview-page,
+.det-work-area > .det-rule-explorer-page,
+.det-work-area > .det-docs-page {
+  background: transparent !important;
+}
+
+.det-auth-upload-panel,
+.det-auth-side-panel,
+.det-overview-report,
+.det-dashboard-action,
+.det-dashboard-placeholder,
+.det-docs-mini-card,
+.det-docs-emphasis-section,
+.det-changelog-item {
+  background-color: var(--det-background-panel) !important;
+  background-image: none !important;
+}
+
+.det-proof-section,
+.det-landing-workflow,
+.det-capability-section,
+.det-landing-final-cta,
+.det-proof-row,
+.det-landing-workflow-step,
+.det-capability-row,
+.det-docs-header,
+.det-docs-section,
+.det-changelog-release-header,
+.det-changelog-footer {
+  background-color: transparent !important;
+  background-image: none !important;
 }
 
 @media (prefers-reduced-motion: reduce) {
