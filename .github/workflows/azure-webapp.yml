@@ -1,0 +1,57 @@
+name: Build and deploy DotDet API to Azure Web App
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.x'
+
+      - name: Restore
+        run: dotnet restore backend/Forge.Api/Forge.Api.csproj
+
+      - name: Build
+        run: dotnet build backend/Forge.Api/Forge.Api.csproj --configuration Release --no-restore
+
+      - name: Publish
+        run: dotnet publish backend/Forge.Api/Forge.Api.csproj --configuration Release --no-build --output "${{ github.workspace }}/publish/api"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dotdet-api
+          path: ${{ github.workspace }}/publish/api
+
+  deploy:
+    runs-on: windows-latest
+    needs: build
+    permissions:
+      contents: read
+
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dotdet-api
+          path: dotdet-api
+
+      - name: Deploy to Azure Web App
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: dotdet-ctbsh6dzfnb0athn
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          package: dotdet-api
