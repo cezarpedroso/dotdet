@@ -21,4 +21,12 @@
     <PackageReference Include="System.Security.Cryptography.Xml" Version="8.0.3" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="..\..\samples\**\*"
+          Exclude="..\..\samples\**\bin\**;..\..\samples\**\obj\**">
+      <Link>samples\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+  </ItemGroup>
+
 </Project>
